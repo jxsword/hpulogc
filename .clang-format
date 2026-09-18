@@ -1,0 +1,124 @@
+# .clang-format
+# 纯 C 项目风格：8 空格 Tab，80 列，Allman 括号，指针贴变量
+# 兼容 Linux 内核 / 嵌入式 / 传统 C 项目习惯
+
+BasedOnStyle: LLVM
+Language: C
+Standard: c17
+
+# ── 缩进 ──────────────────────────────
+IndentWidth: 4
+TabWidth: 8
+UseTab: Always
+ContinuationIndentWidth: 8
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentPPDirectives: None
+NamespaceIndentation: None
+
+# ── 行宽 ──────────────────────────────
+ColumnLimit: 80
+PenaltyExcessCharacter: 40
+PenaltyReturnTypeOnItsOwnLine: 800
+PenaltyBreakAssignment: 250
+PenaltyBreakFirstLessLess: 150
+PenaltyBreakString: 350
+PenaltyBreakComment: 700
+PenaltyIndentedWhitespace: 30
+
+# ── 花括号 ────────────────────────────
+BreakBeforeBraces: Allman
+BraceWrapping:
+  AfterClass: true
+  AfterControlStatement: true
+  AfterEnum: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  SplitEmptyFunction: true
+  SplitEmptyNamespace: true
+  SplitEmptyRecord: true
+
+# ── 短语句 ────────────────────────────
+AllowShortIfStatementsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+
+# ── 指针 / 引用 ──────────────────────
+DerivePointerAlignment: false
+PointerAlignment: Right
+ReferenceAlignment: Right
+
+# ── 函数参数 ──────────────────────────
+BinPackParameters: false
+BinPackArguments: false
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowAllArgumentsOnNextLine: true
+PackConstructorInitializers: Never
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+
+# ── 操作符 ────────────────────────────
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeTernaryOperators: true
+AlignOperands: DontAlign
+AlignAfterOpenBracket: DontAlign
+
+# ── 空格 ──────────────────────────────
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInAngles: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+
+# ── 空行 ──────────────────────────────
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# ── 对齐 ──────────────────────────────
+AlignTrailingComments: true
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: true
+AlignEscapedNewlines: Left
+
+# ── include ───────────────────────────
+SortIncludes: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<[A-Za-z0-9_.h]+>$'    # 标准库 <stdio.h> <stdlib.h>
+    Priority: 1
+  - Regex: '^<[A-Za-z].+>'           # 系统库 <sys/types.h> <unistd.h>
+    Priority: 2
+  - Regex: '^"'                       # 项目头文件 "my_header.h"
+    Priority: 3
+  - Regex: '.*'
+    Priority: 99
+IncludeIsMainRegex: '(Test)?$'
+MainIncludeChar: Quote
+
+# ── 注释 ──────────────────────────────
+ReflowComments: true
+CommentPragmas: '^ IWYU pragma:'
+
+# ── 模板 ──────────────────────────────
+AlwaysBreakTemplateDeclarations: No
+BreakBeforeConceptDeclarations: false
+
+# ── 其他 ──────────────────────────────
+FixNamespaceComments: false
+InsertNewlineAtEOF: true
+DeriveLineEnding: true
+UseCRLF: false
+RemoveBracesLLVM: false
+SeparateDefinitionBlocks: Leave

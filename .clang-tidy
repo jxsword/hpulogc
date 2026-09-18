@@ -1,0 +1,175 @@
+# .clang-tidy
+# 纯 C 项目静态检查：强制 snake_case + 安全检查 + 可移植性检查
+
+Checks: '
+  -*,
+
+  # ── 命名检查 ────────────────────────
+  readability-identifier-naming,
+
+  # ── 安全检查 ────────────────────────
+  clang-analyzer-*,
+  bugprone-*,
+
+  # ── 性能检查 ────────────────────────
+  performance-*,
+
+  # ── 可移植性 ────────────────────────
+  portability-*,
+
+  # ── 杂项 ────────────────────────────
+  misc-static-assert,
+  misc-definitions-in-headers,
+  misc-misplaced-const,
+  misc-no-recursion,
+  misc-redundant-expression,
+  misc-unused-alias-decls,
+  misc-unused-parameters,
+  misc-unused-using-decls,
+
+  # ── 现代 C 风格 ────────────────────
+  modernize-deprecated-headers,
+  modernize-use-nullptr,
+  modernize-use-bool-literals,
+
+  # ── 排除误报较多的检查 ────────────
+  -bugprone-assignment-in-if-condition,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -bugprone-signed-char-misuse,
+  -bugprone-sizeof-expression,
+  -bugprone-switch-continue,
+  -bugprone-unhandled-self-assignment,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-valist.Uninitialized,
+  -misc-no-recursion,
+  -misc-unused-parameters,
+  -performance-no-int-to-ptr,
+  -readability-identifier-naming-MacroDefinitionCase,
+'
+
+CheckOptions:
+  # ── 命名规则：全部 snake_case ──────
+  - key: readability-identifier-naming.ClassCase
+    value: lower_case
+  - key: readability-identifier-naming.StructCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.StaticConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.TypedefCase
+    value: lower_case
+  - key: readability-identifier-naming.UnionCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  # ── 宏定义保持大写 ──────────────────
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+
+  # ── 忽略无法处理的拆分情况 ──────────
+  - key: readability-identifier-naming.IgnoreFailedSplit
+    value: true
+
+  # ── 其他选项 ────────────────────────
+  - key: bugprone-argument-comment.CommentBoolLiteral
+    value: true
+  - key: bugprone-argument-comment.CommentIntegerLiteral
+    value: true
+  - key: bugprone-argument-comment.CommentFloatLiteral
+    value: true
+  - key: bugprone-argument-comment.CommentUserDefinedLiteral
+    value: true
+  - key: bugprone-argument-comment.CommentCharacterLiteral
+    value: true
+  - key: bugprone-argument-comment.CommentNullPtr
+    value: true
+  - key: bugprone-argument-comment.StrictMode
+    value: true
+  - key: bugprone-suspicious-memset-usage.BytesArg
+    value: true
+  - key: bugprone-suspicious-memset-usage.SizeArg
+    value: true
+  - key: bugprone-suspicious-memset-usage.StrArg
+    value: true
+  - key: bugprone-suspicious-string-compare.StringCompareLike
+    value: strcmp
+  - key: bugprone-suspicious-string-compare.WarnImplicitComparison
+    value: true
+  - key: bugprone-suspicious-string-compare.WarnLogicalNot
+    value: true
+  - key: clang-analyzer-core.NonNullParamChecker
+    value: true
+  - key: clang-analyzer-core.NullDereference
+    value: true
+  - key: clang-analyzer-core.StackAddressEscape
+    value: true
+  - key: clang-analyzer-core.UndefinedBinaryOperatorResult
+    value: true
+  - key: clang-analyzer-core.uninitialized.ArraySubscript
+    value: true
+  - key: clang-analyzer-core.uninitialized.Assign
+    value: true
+  - key: clang-analyzer-core.uninitialized.Branch
+    value: true
+  - key: clang-analyzer-core.uninitialized.CapturedBlockVariable
+    value: true
+  - key: clang-analyzer-core.uninitialized.UndefReturn
+    value: true
+  - key: clang-analyzer-deadcode.DeadStores
+    value: true
+  - key: clang-analyzer-security.FloatLoopCounter
+    value: true
+  - key: clang-analyzer-security.insecureAPI.bcmp
+    value: true
+  - key: clang-analyzer-security.insecureAPI.bcopy
+    value: true
+  - key: clang-analyzer-security.insecureAPI.bzero
+    value: true
+  - key: clang-analyzer-security.insecureAPI.getpw
+    value: true
+  - key: clang-analyzer-security.insecureAPI.gets
+    value: true
+  - key: clang-analyzer-security.insecureAPI.mkstemp
+    value: true
+  - key: clang-analyzer-security.insecureAPI.mktemp
+    value: true
+  - key: clang-analyzer-security.insecureAPI.rand
+    value: true
+  - key: clang-analyzer-security.insecureAPI.strcpy
+    value: true
+  - key: clang-analyzer-security.insecureAPI.vfork
+    value: true
+  - key: clang-analyzer-unix.Malloc
+    value: true
+  - key: clang-analyzer-unix.MismatchedDeallocator
+    value: true
+  - key: clang-analyzer-unix.Vfork
+    value: true
+  - key: clang-analyzer-unix.cstring.BadSizeArg
+    value: true
+  - key: clang-analyzer-unix.cstring.NullArg
+    value: true
+  - key: clang-analyzer-valist.Uninitialized
+    value: true
+  - key: clang-analyzer-valist.CopyToSelf
+    value: true
