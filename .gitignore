@@ -62,3 +62,5 @@ vcpkg_installed/
 conan_build/
 
 tmp/
+
+.zcode/
