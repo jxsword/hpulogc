@@ -18,6 +18,25 @@
 #include <unistd.h>
 
 /**
+ * @brief Nanosecond mtime from a stat buffer.
+ *
+ * Phase 3 defect fix (docs/implementation_notes.md, Phase 3 chapter):
+ * Darwin names the field st_mtimespec and has no st_mtim, so the shared
+ * poll backend failed to compile on macOS. Behavior on Linux is
+ * unchanged.
+ */
+static uint64_t stat_mtime_ns(const struct stat* st)
+{
+#if defined(__APPLE__)
+    return (uint64_t)st->st_mtimespec.tv_sec * 1000000000ULL +
+           (uint64_t)st->st_mtimespec.tv_nsec;
+#else
+    return (uint64_t)st->st_mtim.tv_sec * 1000000000ULL +
+           (uint64_t)st->st_mtim.tv_nsec;
+#endif
+}
+
+/**
  * @brief Sleep for a duration without signal-unfriendly busy waits.
  * @param ms  Duration in milliseconds.
  */
@@ -53,16 +72,14 @@ static int poll_snapshot(hpu_watcher_t* w)
     }
 
     if (!w->primed) {
-        w->last_mtime_ns = (uint64_t)st.st_mtim.tv_sec * 1000000000ULL +
-                           (uint64_t)st.st_mtim.tv_nsec;
+        w->last_mtime_ns = stat_mtime_ns(&st);
         w->last_size = (int64_t)st.st_size;
         w->primed    = 1;
         return 0;
     }
 
     {
-        uint64_t mtime_ns = (uint64_t)st.st_mtim.tv_sec * 1000000000ULL +
-                            (uint64_t)st.st_mtim.tv_nsec;
+        uint64_t mtime_ns = stat_mtime_ns(&st);
         if (mtime_ns != w->last_mtime_ns || (int64_t)st.st_size != w->last_size) {
             w->last_mtime_ns = mtime_ns;
             w->last_size     = (int64_t)st.st_size;
