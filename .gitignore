@@ -46,8 +46,8 @@ install_manifest.txt
 # 调试与日志
 # =====================
 *.log
-core
-core.*
+/core
+/core.*
 
 # =====================
 # 系统文件
