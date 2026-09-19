@@ -209,25 +209,43 @@ endif()
 # ---------------------------------------------------------------------------
 set(HPU_SANITIZER_FLAGS "")
 if(NOT HPULOGC_SANITIZER STREQUAL "none")
-    if(HPULOGC_SANITIZER MATCHES "thread")
-        if(NOT HPULOGC_SANITIZER STREQUAL "thread")
-            message(FATAL_ERROR
-                "HPULOGC_SANITIZER: thread is mutually exclusive with others")
+    if(MSVC)
+        if(HPULOGC_SANITIZER MATCHES "address")
+            # /fsanitize=address requires VS2019 16.9+ (spec 16.2 DoD).
+            list(APPEND HPU_SANITIZER_FLAGS /fsanitize=address)
         endif()
-        list(APPEND HPU_SANITIZER_FLAGS -fsanitize=thread)
-    endif()
-    if(HPULOGC_SANITIZER MATCHES "address")
-        list(APPEND HPU_SANITIZER_FLAGS -fsanitize=address)
-    endif()
-    if(HPULOGC_SANITIZER MATCHES "undefined")
-        list(APPEND HPU_SANITIZER_FLAGS -fsanitize=undefined
-             -fno-sanitize-recover=all)
+        if(HPULOGC_SANITIZER MATCHES "thread")
+            message(WARNING
+                "hpulogc: ThreadSanitizer is not available with MSVC; "
+                "HPULOGC_SANITIZER='${HPULOGC_SANITIZER}' downgraded")
+        endif()
+        if(HPULOGC_SANITIZER MATCHES "undefined")
+            message(WARNING
+                "hpulogc: UBSan is not available with MSVC; "
+                "HPULOGC_SANITIZER='${HPULOGC_SANITIZER}' downgraded")
+        endif()
+    else()
+        if(HPULOGC_SANITIZER MATCHES "thread")
+            if(NOT HPULOGC_SANITIZER STREQUAL "thread")
+                message(FATAL_ERROR
+                    "HPULOGC_SANITIZER: thread is mutually exclusive with "
+                    "others")
+            endif()
+            list(APPEND HPU_SANITIZER_FLAGS -fsanitize=thread)
+        endif()
+        if(HPULOGC_SANITIZER MATCHES "address")
+            list(APPEND HPU_SANITIZER_FLAGS -fsanitize=address)
+        endif()
+        if(HPULOGC_SANITIZER MATCHES "undefined")
+            list(APPEND HPU_SANITIZER_FLAGS -fsanitize=undefined
+                 -fno-sanitize-recover=all)
+        endif()
     endif()
     if(HPU_SANITIZER_FLAGS STREQUAL "")
-        message(FATAL_ERROR
-            "Unknown HPULOGC_SANITIZER '${HPULOGC_SANITIZER}'")
+        message(WARNING
+            "hpulogc: no sanitizer of '${HPULOGC_SANITIZER}' applies to "
+            "this compiler; building without")
     endif()
-    list(APPEND HPU_SANITIZER_FLAGS -fno-omit-frame-pointer)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -235,11 +253,22 @@ endif()
 # ---------------------------------------------------------------------------
 set(HPULOGC_PRIVATE_DEFINES
     ${HPU_ATOMIC_BACKEND_DEFINE}
-    HPU_PLATFORM_POSIX=1
     HPULOGC_BUILD_VERSION_NAME="${HPULOGC_BUILD_PRESET}"
 )
+if(HPU_PLATFORM STREQUAL "windows")
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPU_PLATFORM_WIN32=1)
+elseif(HPU_PLATFORM STREQUAL "darwin")
+    # Phase 3: the darwin layer reuses the POSIX shared layer.
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPU_PLATFORM_POSIX=1)
+else()
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPU_PLATFORM_POSIX=1)
+endif()
 if(HPU_PLATFORM STREQUAL "linux")
     list(APPEND HPULOGC_PRIVATE_DEFINES HPU_PLATFORM_LINUX=1)
+endif()
+if(HPU_PLATFORM STREQUAL "windows")
+    # Keep the Win32 umbrella header from polluting library TUs.
+    list(APPEND HPULOGC_PRIVATE_DEFINES WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 if(HPULOGC_CONCURRENCY_UC STREQUAL "SPSC")
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_SPSC=1)
@@ -264,30 +293,58 @@ add_library(hpulogc_build_defs INTERFACE)
 target_compile_definitions(hpulogc_build_defs INTERFACE
     ${HPULOGC_PRIVATE_DEFINES})
 
-set(HPULOGC_WARNING_FLAGS -Wall -Wextra)
-if(HPULOGC_WERROR)
-    list(APPEND HPULOGC_WARNING_FLAGS -Werror)
+if(MSVC)
+    # CRT security deprecation warnings (fopen/strerror in frozen code)
+    # are silenced project-wide: the library's string handling is bounded
+    # already (spec 9); recorded in docs/implementation_notes.md.
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    # /W4 zero-warning policy. /wd4210: frozen src/output/output.c uses
+    # block-scope `extern` function declarations (legal C99, MSVC-only
+    # style warning; recorded in docs/implementation_notes.md).
+    set(HPULOGC_WARNING_FLAGS /W4 /utf-8 /wd4210)
+    if(HPULOGC_WERROR)
+        list(APPEND HPULOGC_WARNING_FLAGS /WX)
+    endif()
+else()
+    set(HPULOGC_WARNING_FLAGS -Wall -Wextra)
+    if(HPULOGC_WERROR)
+        list(APPEND HPULOGC_WARNING_FLAGS -Werror)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
 # Library sources
 # ---------------------------------------------------------------------------
 set(HPULOGC_PLATFORM_SOURCES)
-list(APPEND HPULOGC_PLATFORM_SOURCES
-    src/platform/posix/posix_sync.c
-    src/platform/posix/posix_thread.c
-    src/platform/posix/posix_time.c
-    src/platform/posix/posix_fs.c
-    src/platform/posix/posix_path.c
-    src/platform/posix/posix_tls.c
-    src/platform/posix/posix_tid.c
-    src/platform/posix/posix_signal.c
-    src/platform/posix/posix_watcher_poll.c
-)
-if(HPU_PLATFORM STREQUAL "linux")
-    list(APPEND HPULOGC_PLATFORM_SOURCES src/platform/linux/linux_watcher.c)
+if(HPU_PLATFORM STREQUAL "windows")
+    list(APPEND HPULOGC_PLATFORM_SOURCES
+        src/platform/win32/win32_sync.c
+        src/platform/win32/win32_thread.c
+        src/platform/win32/win32_time.c
+        src/platform/win32/win32_fs.c
+        src/platform/win32/win32_path.c
+        src/platform/win32/win32_tid.c
+        src/platform/win32/win32_tls.c
+        src/platform/win32/win32_signal.c
+        src/platform/win32/win32_watcher.c
+    )
 else()
-    list(APPEND HPULOGC_PLATFORM_SOURCES src/platform/posix/posix_watcher.c)
+    list(APPEND HPULOGC_PLATFORM_SOURCES
+        src/platform/posix/posix_sync.c
+        src/platform/posix/posix_thread.c
+        src/platform/posix/posix_time.c
+        src/platform/posix/posix_fs.c
+        src/platform/posix/posix_path.c
+        src/platform/posix/posix_tls.c
+        src/platform/posix/posix_tid.c
+        src/platform/posix/posix_signal.c
+        src/platform/posix/posix_watcher_poll.c
+    )
+    if(HPU_PLATFORM STREQUAL "linux")
+        list(APPEND HPULOGC_PLATFORM_SOURCES src/platform/linux/linux_watcher.c)
+    else()
+        list(APPEND HPULOGC_PLATFORM_SOURCES src/platform/posix/posix_watcher.c)
+    endif()
 endif()
 
 set(HPULOGC_RING_SOURCE src/ring/ringbuf_locked.c)
@@ -369,6 +426,10 @@ if(HPULOGC_MIN_SIZE_OPT AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         -Os -ffunction-sections -fdata-sections)
     target_link_options(hpulogc PRIVATE -Wl,--gc-sections)
 endif()
+if(HPULOGC_MIN_SIZE_OPT AND MSVC)
+    target_compile_options(hpulogc PRIVATE /Os /Gy /Gw /Zc:inline)
+    target_link_options(hpulogc PRIVATE /OPT:REF /OPT:ICF)
+endif()
 
 set_target_properties(hpulogc PROPERTIES
     C_VISIBILITY_PRESET hidden
@@ -396,9 +457,17 @@ if(HPULOGC_BUILD_SHARED)
         target_link_options(hpulogc_shared PRIVATE ${HPU_SANITIZER_FLAGS})
     endif()
     set_target_properties(hpulogc_shared PROPERTIES
-        OUTPUT_NAME hpulogc
         C_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
+    if(WIN32)
+        # The DLL import library would collide with the static library's
+        # hpulogc.lib on Windows; give the DLL a distinct name.
+        set_target_properties(hpulogc_shared PROPERTIES
+            OUTPUT_NAME hpulogc_shared)
+    else()
+        set_target_properties(hpulogc_shared PROPERTIES
+            OUTPUT_NAME hpulogc)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
