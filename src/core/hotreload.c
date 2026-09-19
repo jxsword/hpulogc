@@ -25,15 +25,32 @@
 static hpu_atomic_u32 g_reload_busy;
 
 /**
- * @brief Try to claim the reload slot.
- * @return Non-zero when claimed.
+ * @brief Claim the reload slot, queueing behind an in-flight reload
+ *        (decision 34).
+ *
+ * The watcher thread may already be reloading exactly when an explicit
+ * trigger arrives; dropping the trigger in that case makes "reload now"
+ * racy for callers (a test or application cannot tell "rejected" from
+ * "will be applied"), so an explicit trigger waits up to 5 s for the
+ * slot instead. Returns 0 on timeout or when the runtime shut down.
  */
 static int reload_try_enter(void)
 {
-    uint32_t expected = 0;
+    uint64_t deadline = hpu_now_ns() / 1000000ULL + 5000;
 
-    return hpu_at_cas_u32(&g_reload_busy, &expected, 1, HPU_MO_ACQ_REL,
-                          HPU_MO_ACQUIRE);
+    for (;;) {
+        uint32_t expected = 0;
+
+        if (hpu_at_cas_u32(&g_reload_busy, &expected, 1, HPU_MO_ACQ_REL,
+                           HPU_MO_ACQUIRE)) {
+            return 1;
+        }
+        if (g_rt.state != HPU_RT_RUNNING ||
+            hpu_now_ns() / 1000000ULL >= deadline) {
+            return 0;
+        }
+        hpu_core_sleep_ms(2);
+    }
 }
 
 /**

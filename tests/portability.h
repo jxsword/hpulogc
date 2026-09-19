@@ -67,7 +67,7 @@ typedef struct hpu_test_thread_start {
 /**
  * @brief __stdcall trampoline adapting to the pthread-style entry.
  */
-static unsigned __stdcall hpu_test_thread_trampoline(void* raw)
+static inline unsigned __stdcall hpu_test_thread_trampoline(void* raw)
 {
     hpu_test_thread_start_t start = *(hpu_test_thread_start_t*)raw;
 
@@ -80,7 +80,7 @@ static unsigned __stdcall hpu_test_thread_trampoline(void* raw)
  * @brief Start a thread.
  * @return 0 on success, -1 on failure.
  */
-static int hpu_test_thread_create(hpu_test_thread_t* t,
+static inline int hpu_test_thread_create(hpu_test_thread_t* t,
                                   hpu_test_thread_fn fn, void* arg)
 {
     hpu_test_thread_start_t* start =
@@ -104,7 +104,7 @@ static int hpu_test_thread_create(hpu_test_thread_t* t,
 /**
  * @brief Join a thread and release its handle.
  */
-static void hpu_test_thread_join(hpu_test_thread_t* t)
+static inline void hpu_test_thread_join(hpu_test_thread_t* t)
 {
     if (t->handle != NULL) {
         (void)WaitForSingleObject(t->handle, INFINITE);
@@ -117,7 +117,7 @@ static void hpu_test_thread_join(hpu_test_thread_t* t)
  * @brief Initialize a barrier for @p total parties.
  * @return 0 on success, -1 on failure.
  */
-static int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
+static inline int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
 {
     b->total = (LONG)total;
     b->count = 0;
@@ -129,7 +129,7 @@ static int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
 /**
  * @brief Wait at the barrier until all parties arrived.
  */
-static void hpu_test_barrier_wait(hpu_test_barrier_t* b)
+static inline void hpu_test_barrier_wait(hpu_test_barrier_t* b)
 {
     EnterCriticalSection(&b->mu);
     if (++b->count == b->total) {
@@ -144,20 +144,20 @@ static void hpu_test_barrier_wait(hpu_test_barrier_t* b)
 /**
  * @brief Destroy a barrier.
  */
-static void hpu_test_barrier_destroy(hpu_test_barrier_t* b)
+static inline void hpu_test_barrier_destroy(hpu_test_barrier_t* b)
 {
     DeleteCriticalSection(&b->mu);
     (void)b;
 }
 
 /** @brief Millisecond sleep. */
-static void hpu_test_sleep_ms(unsigned ms)
+static inline void hpu_test_sleep_ms(unsigned ms)
 {
     Sleep(ms);
 }
 
 /** @brief Process id. */
-static int hpu_test_getpid(void)
+static inline int hpu_test_getpid(void)
 {
     return _getpid();
 }
@@ -165,7 +165,7 @@ static int hpu_test_getpid(void)
 /**
  * @brief Fill @p buf with a writable scratch directory.
  */
-static void hpu_test_tmpdir(char* buf, size_t sz)
+static inline void hpu_test_tmpdir(char* buf, size_t sz)
 {
     const char* tmp = getenv("TEMP");
 
@@ -176,13 +176,13 @@ static void hpu_test_tmpdir(char* buf, size_t sz)
 }
 
 /** @brief Remove a file (best effort). */
-static void hpu_test_unlink(const char* path)
+static inline void hpu_test_unlink(const char* path)
 {
     (void)DeleteFileA(path);
 }
 
 /** @brief Remove an empty directory (best effort). */
-static void hpu_test_rmdir(const char* path)
+static inline void hpu_test_rmdir(const char* path)
 {
     (void)_rmdir(path);
 }
@@ -190,7 +190,7 @@ static void hpu_test_rmdir(const char* path)
 /**
  * @brief Recursively remove a directory tree (best effort).
  */
-static void hpu_test_rmtree(const char* path)
+static inline void hpu_test_rmtree(const char* path)
 {
     char pattern[MAX_PATH];
     WIN32_FIND_DATAA fd;
@@ -221,7 +221,7 @@ static void hpu_test_rmtree(const char* path)
 }
 
 /** @brief errno helper used by hpu_test_mkdir (avoid EEXIST include). */
-static int errno_exists(const char* path)
+static inline int errno_exists(const char* path)
 {
     DWORD attrs = GetFileAttributesA(path);
 
@@ -230,7 +230,7 @@ static int errno_exists(const char* path)
 }
 
 /** @brief Directory creation (single). */
-static int hpu_test_mkdir(const char* path)
+static inline int hpu_test_mkdir(const char* path)
 {
     return _mkdir(path) == 0 || errno_exists(path) ? 0 : -1;
 }
@@ -240,7 +240,7 @@ static int hpu_test_mkdir(const char* path)
 #define hpu_test_pclose _pclose
 
 /** @brief Monotonic nanoseconds (QPC; benchmark timing). */
-static unsigned long long hpu_test_now_ns(void)
+static inline unsigned long long hpu_test_now_ns(void)
 {
     static LARGE_INTEGER freq;
     LARGE_INTEGER c;
@@ -254,7 +254,7 @@ static unsigned long long hpu_test_now_ns(void)
 }
 
 /** @brief Truncate a file to @p size bytes. */
-static void hpu_test_truncate_file(const char* path, long size)
+static inline void hpu_test_truncate_file(const char* path, long size)
 {
     FILE* fp = fopen(path, "r+b");
 
@@ -287,39 +287,39 @@ typedef struct hpu_test_barrier {
 typedef void* (*hpu_test_thread_fn)(void*);
 
 /** @brief Start a thread. @return 0 on success, -1 on failure. */
-static int hpu_test_thread_create(hpu_test_thread_t* t,
+static inline int hpu_test_thread_create(hpu_test_thread_t* t,
                                   hpu_test_thread_fn fn, void* arg)
 {
     return pthread_create(&t->handle, NULL, fn, arg) == 0 ? 0 : -1;
 }
 
 /** @brief Join a thread. */
-static void hpu_test_thread_join(hpu_test_thread_t* t)
+static inline void hpu_test_thread_join(hpu_test_thread_t* t)
 {
     (void)pthread_join(t->handle, NULL);
 }
 
 /** @brief Initialize a barrier. @return 0 on success. */
-static int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
+static inline int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
 {
     return pthread_barrier_init(&b->barrier, NULL, total) == 0 ? 0 : -1;
 }
 
 /** @brief Wait at the barrier. */
-static void hpu_test_barrier_wait(hpu_test_barrier_t* b)
+static inline void hpu_test_barrier_wait(hpu_test_barrier_t* b)
 {
     pthread_barrier_wait(&b->barrier);
 }
 
 /** @brief Destroy a barrier. */
-static void hpu_test_barrier_destroy(hpu_test_barrier_t* b)
+static inline void hpu_test_barrier_destroy(hpu_test_barrier_t* b)
 {
     pthread_barrier_destroy(&b->barrier);
     (void)b;
 }
 
 /** @brief Millisecond sleep. */
-static void hpu_test_sleep_ms(unsigned ms)
+static inline void hpu_test_sleep_ms(unsigned ms)
 {
     struct timespec ts;
 
@@ -331,31 +331,31 @@ static void hpu_test_sleep_ms(unsigned ms)
 }
 
 /** @brief Process id. */
-static int hpu_test_getpid(void)
+static inline int hpu_test_getpid(void)
 {
     return (int)getpid();
 }
 
 /** @brief Fill @p buf with a writable scratch directory. */
-static void hpu_test_tmpdir(char* buf, size_t sz)
+static inline void hpu_test_tmpdir(char* buf, size_t sz)
 {
     snprintf(buf, sz, "/tmp");
 }
 
 /** @brief Remove a file (best effort). */
-static void hpu_test_unlink(const char* path)
+static inline void hpu_test_unlink(const char* path)
 {
     (void)unlink(path);
 }
 
 /** @brief Remove an empty directory (best effort). */
-static void hpu_test_rmdir(const char* path)
+static inline void hpu_test_rmdir(const char* path)
 {
     (void)rmdir(path);
 }
 
 /** @brief Recursively remove a directory tree (best effort). */
-static void hpu_test_rmtree(const char* path)
+static inline void hpu_test_rmtree(const char* path)
 {
     char cmd[1024];
 
@@ -364,7 +364,7 @@ static void hpu_test_rmtree(const char* path)
 }
 
 /** @brief Directory creation (single). */
-static int hpu_test_mkdir(const char* path)
+static inline int hpu_test_mkdir(const char* path)
 {
     if (mkdir(path, 0755) == 0) {
         return 0;
@@ -377,7 +377,7 @@ static int hpu_test_mkdir(const char* path)
 #define hpu_test_pclose pclose
 
 /** @brief Monotonic nanoseconds (CLOCK_MONOTONIC; benchmark timing). */
-static unsigned long long hpu_test_now_ns(void)
+static inline unsigned long long hpu_test_now_ns(void)
 {
     struct timespec ts;
 
@@ -387,7 +387,7 @@ static unsigned long long hpu_test_now_ns(void)
 }
 
 /** @brief Truncate a file to @p size bytes. */
-static void hpu_test_truncate_file(const char* path, long size)
+static inline void hpu_test_truncate_file(const char* path, long size)
 {
     FILE* fp = fopen(path, "r+b");
 

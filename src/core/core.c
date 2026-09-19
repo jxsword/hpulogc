@@ -273,6 +273,23 @@ void hpu_core_retire_output_lost(void)
     hpu_mutex_unlock(&g_rt.conf_lock);
 }
 
+void hpu_core_sleep_ms(uint32_t ms)
+{
+    static hpu_mutex_t mu;
+    static hpu_cond_t cond;
+    static int ready = 0;
+
+    if (!ready) {
+        if (hpu_mutex_init(&mu) != 0 || hpu_cond_init(&cond) != 0) {
+            return;
+        }
+        ready = 1;
+    }
+    hpu_mutex_lock(&mu);
+    (void)hpu_cond_timedwait_ms(&cond, &mu, ms);
+    hpu_mutex_unlock(&mu);
+}
+
 /* ------------------------------------------------------------------ */
 /* Fork handling                                                       */
 /* ------------------------------------------------------------------ */
