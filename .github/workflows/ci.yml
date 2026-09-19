@@ -1,16 +1,18 @@
 # ============================================================================
 # hpulogc CI (GitHub Actions)
 #
-# Stage 1 (this file): Linux smoke matrix — validates the workflow itself
-# and guards the POSIX shared layer on every push/PR.
+# Platforms:
+#   - linux-smoke:   {gcc, clang} x {C99, C11} smoke matrix
+#   - macos-matrix:  {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
+#   - macos-presets: full / min / sync_thread / async_single
+#   - macos-asan:    ASan build + full ctest (zero reports required)
+#   - macos-arch:    x86_64 binaries under Rosetta on the arm64 runner
+#   - macos-tsan:    weekly schedule (or manual workflow_dispatch)
 #
-# Stage 2 (Phase 3 PR): macOS build/test matrix + ASan + dual-arch +
-# nightly TSan jobs, and a Windows (MSVC) job — see the commented
-# placeholder at the bottom; enabled in the phase3/macos PR.
-#
-# All jobs reuse the existing CMake/CTest system (HPULOGC_* options);
-# no new test framework is introduced. Path filters skip docs-only
-# changes. Ninja/CMake are preinstalled on GitHub runners.
+# All jobs reuse the existing CMake/CTest system (HPULOGC_* options); no
+# new test framework. The full 16-combination Linux matrix plus presets
+# stays in scripts/run_matrix.sh (release gate). Docs-only changes skip
+# CI. Scheduled runs execute the TSan job only (spec 13.5: TSan nightly).
 # ============================================================================
 
 name: CI
@@ -28,14 +30,17 @@ on:
       - '**.md'
       - 'LICENSE'
   workflow_dispatch:
+  schedule:
+    # Weekly, Monday 21:00 UTC: TSan-only run (other jobs skip).
+    - cron: '0 21 * * 1'
 
 jobs:
   # ------------------------------------------------------------------
-  # Linux smoke: {gcc, clang} x {C99, C11}. The full 16-combination
-  # matrix plus presets stays in scripts/run_matrix.sh (release gate);
-  # CI runs the compiler/standard dimensions only to keep minutes low.
+  # Linux smoke: compiler/standard dimensions. The full functional
+  # matrix stays in scripts/run_matrix.sh (release gate).
   # ------------------------------------------------------------------
   linux-smoke:
+    if: github.event_name != 'schedule'
     name: linux ${{ matrix.cc }} c${{ matrix.std }}
     runs-on: ubuntu-latest
     strategy:
@@ -60,11 +65,127 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   # ------------------------------------------------------------------
-  # Phase 3 placeholder: macOS build/test matrix (to be enabled in the
-  # phase3/macos PR, spec 16.3):
-  #   - macos-matrix: {C99,C11} x {locked,lockfree} x {SPSC,MPSC}
-  #   - macos-presets: full/min/sync_thread/async_single
-  #   - macos-asan: -DHPULOGC_SANITIZER=address
-  #   - macos-arch: x86_64 via CMAKE_OSX_ARCHITECTURES (Rosetta)
-  #   - macos-tsan: workflow_dispatch + weekly schedule (spec 13.5)
+  # macOS (Phase 3): Apple Silicon runner, Apple Clang. C99 uses the
+  # __atomic_* backend, C11 uses <stdatomic.h> (auto-detected); both
+  # validated per combination.
   # ------------------------------------------------------------------
+  macos-matrix:
+    if: github.event_name != 'schedule'
+    name: macos c${{ matrix.std }} ${{ matrix.lf }} ${{ matrix.conc }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { std: 99, lf: 'OFF', conc: SPSC }
+          - { std: 99, lf: 'OFF', conc: MPSC }
+          - { std: 99, lf: 'ON',  conc: SPSC }
+          - { std: 99, lf: 'ON',  conc: MPSC }
+          - { std: 11, lf: 'OFF', conc: SPSC }
+          - { std: 11, lf: 'OFF', conc: MPSC }
+          - { std: 11, lf: 'ON',  conc: SPSC }
+          - { std: 11, lf: 'ON',  conc: MPSC }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare toolchain
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DHPULOGC_C_STANDARD=${{ matrix.std }}
+          -DHPULOGC_LOCKFREE=${{ matrix.lf }}
+          -DHPULOGC_CONCURRENCY=${{ matrix.conc }}
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  macos-presets:
+    if: github.event_name != 'schedule'
+    name: macos preset ${{ matrix.preset }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [full, min, sync_thread, async_single]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare toolchain
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DHPULOGC_BUILD_PRESET=${{ matrix.preset }}
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  macos-asan:
+    if: github.event_name != 'schedule'
+    name: macos asan
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare toolchain
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DHPULOGC_SANITIZER=address
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # Dual architecture: x86_64 binaries run under Rosetta 2 on the arm64
+  # runner; two representative combinations (lockfree SPSC, locked MPSC)
+  # keep minutes bounded.
+  macos-arch:
+    if: github.event_name != 'schedule'
+    name: macos x86_64 ${{ matrix.tag }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { tag: lockfree-SPSC, lf: 'ON',  conc: SPSC }
+          - { tag: locked-MPSC,   lf: 'OFF', conc: MPSC }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare toolchain
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_OSX_ARCHITECTURES=x86_64
+          -DHPULOGC_LOCKFREE=${{ matrix.lf }}
+          -DHPULOGC_CONCURRENCY=${{ matrix.conc }}
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # TSan only on schedule / manual dispatch (fork tests excluded by the
+  # build system under TSan; ring overwrite cases self-skip, decision 9).
+  macos-tsan:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: macos tsan (nightly)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare toolchain
+        run: command -v ninja || brew install ninja
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DHPULOGC_SANITIZER=thread
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
