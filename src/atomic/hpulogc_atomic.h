@@ -95,6 +95,14 @@ static inline void hpu_cpu_relax(void)
     __builtin_ia32_pause();
 #elif defined(__aarch64__) || defined(__arm__)
     __asm__ __volatile__("yield" ::: "memory");
+#elif defined(_MSC_VER) && \
+    (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+    /* Phase 1 defect F fix: MSVC does not define __x86_64__/__i386__, so
+     * the pause hint never compiled in before (recorded in
+     * docs/implementation_notes.md). */
+    _mm_pause();
+#elif defined(_MSC_VER) && (defined(_M_ARM64) || defined(_M_ARM))
+    __yield();
 #else
     /* no-op on other architectures */
 #endif

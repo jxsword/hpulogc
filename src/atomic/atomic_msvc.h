@@ -20,6 +20,17 @@
 
 #include <intrin.h>
 
+/**
+ * @brief Compiler-only read barrier (Phase 2 validation fix: _ReadBarrier
+ *        is an MSVC intrinsic absent from MinGW-w64 GCC, which uses an
+ *        empty asm clobber instead).
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#  define HPU_MSVC_READ_BARRIER() __asm__ __volatile__("" ::: "memory")
+#else
+#  define HPU_MSVC_READ_BARRIER() _ReadBarrier()
+#endif
+
 typedef struct {
     volatile long v; /*!< 32-bit storage (long matches Interlocked API) */
 } hpu_atomic_u32;
@@ -45,7 +56,7 @@ static __inline uint32_t hpu_at_load_u32(const hpu_atomic_u32* p,
                                          hpu_memory_order mo)
 {
     if (hpu_msvc_volatile_order(mo)) {
-        _ReadBarrier();
+        HPU_MSVC_READ_BARRIER();
         return (uint32_t)p->v;
     }
     return (uint32_t)p->v;
@@ -101,6 +112,8 @@ static __inline int hpu_at_cas_u32(hpu_atomic_u32* p, uint32_t* expected,
                                    uint32_t desired, hpu_memory_order succ,
                                    hpu_memory_order fail)
 {
+    (void)succ;
+    (void)fail;
     uint32_t old = (uint32_t)_InterlockedCompareExchange(
         &p->v, (long)desired, (long)*expected);
     if (old == *expected) {
@@ -112,14 +125,24 @@ static __inline int hpu_at_cas_u32(hpu_atomic_u32* p, uint32_t* expected,
 
 /**
  * @brief Atomic load (64-bit).
+ *
+ * On x64/ARM64 an aligned volatile load is atomic; 32-bit x86 needs the
+ * compare-exchange read (Phase 2 validation fix).
  */
 static __inline uint64_t hpu_at_load_u64(const hpu_atomic_u64* p,
                                          hpu_memory_order mo)
 {
+#if defined(_WIN64)
     if (hpu_msvc_volatile_order(mo)) {
-        return (uint64_t)_InterlockedCompareExchange64(&p->v, 0, 0);
+        HPU_MSVC_READ_BARRIER();
+        return (uint64_t)p->v;
     }
     return (uint64_t)p->v;
+#else
+    (void)mo;
+    /* 32-bit targets: a plain 64-bit volatile read may tear. */
+    return (uint64_t)_InterlockedCompareExchange64(&p->v, 0, 0);
+#endif
 }
 
 /**
@@ -128,11 +151,24 @@ static __inline uint64_t hpu_at_load_u64(const hpu_atomic_u64* p,
 static __inline void hpu_at_store_u64(hpu_atomic_u64* p, uint64_t val,
                                       hpu_memory_order mo)
 {
+#if defined(_WIN64)
     if (hpu_msvc_volatile_order(mo)) {
         (void)_InterlockedExchange64(&p->v, (long long)val);
     } else {
         p->v = (long long)val;
     }
+#else
+    (void)mo;
+    {
+        /* 32-bit targets: CAS loop (a plain store may tear). */
+        long long old = p->v;
+
+        while (_InterlockedCompareExchange64(&p->v, (long long)val, old) !=
+               old) {
+            old = p->v;
+        }
+    }
+#endif
 }
 
 /**
@@ -172,6 +208,8 @@ static __inline int hpu_at_cas_u64(hpu_atomic_u64* p, uint64_t* expected,
                                    uint64_t desired, hpu_memory_order succ,
                                    hpu_memory_order fail)
 {
+    (void)succ;
+    (void)fail;
     long long old = _InterlockedCompareExchange64(&p->v, (long long)desired,
                                                   (long long)*expected);
     if ((uint64_t)old == *expected) {
