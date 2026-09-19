@@ -32,26 +32,7 @@ typedef struct consumer_tunables {
     char     stats_file[HPULOGC_MAX_PATH_LEN];
 } consumer_tunables_t;
 
-/**
- * @brief Millisecond sleep built on the platform cond contract (no
- *        dedicated sleep primitive exists in the frozen contract).
- */
-static void consumer_sleep_ms(uint32_t ms)
-{
-    static hpu_mutex_t mu;
-    static hpu_cond_t cond;
-    static int ready = 0;
-
-    if (!ready) {
-        if (hpu_mutex_init(&mu) != 0 || hpu_cond_init(&cond) != 0) {
-            return;
-        }
-        ready = 1;
-    }
-    hpu_mutex_lock(&mu);
-    (void)hpu_cond_timedwait_ms(&cond, &mu, ms);
-    hpu_mutex_unlock(&mu);
-}
+/* Sleep uses the shared hpu_core_sleep_ms() helper (core.c). */
 
 /**
  * @brief Print one stats report line (format is an implementation choice,
@@ -312,7 +293,7 @@ int hpu_consumer_flush(void)
         if (hpu_now_ns() / 1000000ULL >= deadline) {
             return -1; /* best effort: not fully serviced in time */
         }
-        consumer_sleep_ms(1);
+        hpu_core_sleep_ms(1);
         hpu_ring_kick_consumer(g_rt.ring);
     }
 }

@@ -166,6 +166,13 @@ int hpu_core_ring_policy(void);
 void hpu_core_retire_output_lost(void);
 
 /**
+ * @brief Millisecond sleep built on the platform cond contract (the
+ *        frozen contract has no dedicated sleep primitive; shared by
+ *        the consumer and hot-reload threads).
+ */
+void hpu_core_sleep_ms(uint32_t ms);
+
+/**
  * @brief Fork child gate (reinit/disable behavior, spec 9). Called by the
  *        producer path; returns non-zero when the record must be dropped.
  *        Always 0 on Windows (no fork).
