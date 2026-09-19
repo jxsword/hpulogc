@@ -20,7 +20,7 @@ static const char* const g_config =
     "verbose  = \"%time [%level] [%category] [pid:%pid tid:%tid] %msg%n\"\n"
     "\n"
     "[outputs]\n"
-    "out = file, path=/tmp/hpulogc_custom_example.log, rotate=size, "
+    "out = file, path=hpulogc_custom_example.log, rotate=size, "
     "max size=64kb, max files=3, fsync=false, symlink latest=true\n"
     "\n"
     "[rules]\n"
@@ -34,7 +34,7 @@ int main(void)
 
     /* Write the configuration to a temp file and load it. */
     {
-        FILE* fp = fopen("/tmp/hpulogc_custom_example.ini", "w");
+        FILE* fp = fopen("hpulogc_custom_example.ini", "w");
 
         if (fp == NULL) {
             return 1;
@@ -43,7 +43,7 @@ int main(void)
         fclose(fp);
     }
 
-    if (hpulogc_init_from_file("/tmp/hpulogc_custom_example.ini") !=
+    if (hpulogc_init_from_file("hpulogc_custom_example.ini") !=
         HPULOGC_OK) {
         return 1;
     }
@@ -54,6 +54,6 @@ int main(void)
     }
 
     hpulogc_shutdown();
-    printf("done: see /tmp/hpulogc_custom_example.log\n");
+    printf("done: see hpulogc_custom_example.log\n");
     return 0;
 }

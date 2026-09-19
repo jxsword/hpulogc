@@ -21,7 +21,7 @@ int main(void)
 
     memset(&out, 0, sizeof(out));
     out.type = HPULOGC_OUT_FILE;
-    out.path = "/tmp/hpulogc_async_example.log";
+    out.path = "hpulogc_async_example.log";
     cfg.outputs = &out;
     cfg.output_count = 1;
 
@@ -49,6 +49,6 @@ int main(void)
 
     /* shutdown drains the queue (at most shutdown_timeout_ms) */
     hpulogc_shutdown();
-    printf("done: see /tmp/hpulogc_async_example.log\n");
+    printf("done: see hpulogc_async_example.log\n");
     return 0;
 }

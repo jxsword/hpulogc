@@ -19,7 +19,7 @@ int main(void)
 
     memset(outs, 0, sizeof(outs));
     outs[0].type = HPULOGC_OUT_FILE;
-    outs[0].path = "/tmp/hpulogc_categories.log";
+    outs[0].path = "hpulogc_categories.log";
     outs[1].type = HPULOGC_OUT_CONSOLE;
     outs[1].stream = 1;
 
@@ -66,6 +66,6 @@ int main(void)
     hpulogc_set_level_for_category("db.cache", (hpulogc_level_t)-1);
 
     hpulogc_shutdown();
-    printf("done: see /tmp/hpulogc_categories.log\n");
+    printf("done: see hpulogc_categories.log\n");
     return 0;
 }
