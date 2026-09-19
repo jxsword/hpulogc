@@ -366,3 +366,64 @@ test_pipeline.c 直接 `#include "core/core_internal.h"` 并调用
 - 零可变参宏（MSVC 传统预处理器）：HPULOGC_INFO("cat", "no args")
   正确展开（独立验证程序）。
 - MinGW-w64 × x64：见 perf_report_windows.md §6（工具可用，已验证）。
+
+---
+
+# Phase 3（macOS / Apple Clang）
+
+## A. 实施环境说明（诚实记录）
+
+本阶段无本地 macOS 机器：代码在 Windows/WSL 环境编写，macOS 侧的
+验证全部通过 GitHub Actions（`macos-latest`，Apple Silicon，Xcode
+Clang）承担（见 .github/workflows/ci.yml 的 macOS 矩阵，指令 4）。
+凡涉及 macOS 运行时行为的结论均标注"经 CI 验证"或"待 CI 验证"，
+本文件与报告不以本地推测定论。
+
+## B. Phase 1 缺陷修复登记（缺陷通道，冻结文件最小 diff）
+
+| # | 位置 | 缺陷 | 修复 |
+|---|------|------|------|
+| M | src/platform/posix/posix_watcher_poll.c | **新发现**：读取 mtime 使用 `st_mtim`——Darwin 的 `struct stat` 字段名为 `st_mtimespec`，共享轮询后端在 macOS 上编译失败 | 新增 `stat_mtime_ns()` 辅助函数，`#ifdef __APPLE__` 选择字段；Linux 路径数值行为不变 |
+
+冻结文件 diff 总账（Phase 3）：仅 `posix_watcher_poll.c`（M）。
+其余全部改动位于 darwin 专属目录、tests/（允许域）与 CMake。
+
+## C. macOS 平台实现要点
+
+- **darwin_sync.c**：macOS 的 `pthread_condattr_setclock()` 仅接受
+  `CLOCK_REALTIME`，POSIX 共享层的 MONOTONIC 绝对期限方案在 macOS
+  上 `hpu_cond_init` 即失败（运行时硬阻塞）。替代：condvar 以默认
+  （REALTIME）属性初始化，timedwait 用
+  `pthread_cond_timedwait_relative_np`——相对期限不依赖任何时钟，
+  免受墙钟跳变影响，与 Linux MONOTONIC condattr 的保证等价。
+- **darwin_tid.c**：`pthread_threadid_np(NULL, &tid)` 返回系统级
+  线程 ID（契约 hpu_tid.h 指定；POSIX 层的 pthread_self 指针强转
+  fallback 不是系统级 ID）。macOS 10.6+ 可用，无需缓存。
+- **watcher**：按 §16.3 "kqueue 或轮询回退"的选择，Phase 3 使用
+  POSIX 轮询后端（posix_watcher.c + posix_watcher_poll.c）；
+  kqueue（EVFILT_VNODE）为可选增强，列入遗留事项。
+- **原子后端**：无需新代码。C11 走 `<stdatomic.h>`（Apple Clang
+  探测通过），C99 走 `__atomic_*`；`atomic_gcc.h`/`atomic_stdatomic.h`
+  直接复用，OSAtomic* 按规范禁用未使用。
+- **其余契约**（thread/time/fs/path/tls/signal）直接复用 POSIX
+  共享层；clock_gettime 需 macOS 10.12+（README 注明最低版本）。
+- **min 预设链接器**：Apple 链接器无 `--gc-sections`，改
+  `-Wl,-dead_strip`（等价的段回收）。
+
+## D. 测试基建适配（tests/ 允许域）
+
+- **portability.h**：Apple 无 `pthread_barrier_t`（POSIX 可选项），
+  为 `__APPLE__` 补 mutex+cond 计数屏障（与 Windows 分支同方案）；
+  Linux 的 `pthread_barrier_t` 路径不变。
+- **bench_memory.c**：macOS 无 /proc 亦无 mallinfo2，新增
+  `task_info(MACH_TASK_BASIC_INFO)` 的 resident_size 口径分支。
+- **test_fork**：macOS 有 fork，测试参与运行（TSan 构建按决策 9
+  继续豁免）。
+
+## E. Phase 3 验证结果索引
+
+- 本地（无 macOS）：Linux 全矩阵（WSL GCC 15.2 + Clang 22.1，
+  {99,11}×{锁,无锁}×{SPSC,MPSC} 16 组合 + 4 预设）全绿；MSVC
+  /W4 零告警 + ctest 17/17。
+- macOS：ci.yml macOS 矩阵（指令 4 启用）——结果见 Actions 运行
+  与 perf_report_macos.md（如编制）。
