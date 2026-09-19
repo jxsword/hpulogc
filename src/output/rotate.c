@@ -9,7 +9,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Phase 1 defect C fix (docs/implementation_notes.md): <unistd.h> is not
+ * available under MSVC; _getpid() provides the same value. */
+#if defined(_MSC_VER)
+#include <process.h>
+#define hpu_getpid() ((long)_getpid())
+#else
 #include <unistd.h>
+#define hpu_getpid() ((long)getpid())
+#endif
 
 #include "../platform/platform.h"
 
@@ -25,7 +34,11 @@ static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
     y -= m <= 2;
     int64_t era = (y >= 0 ? y : y - 399) / 400;
     unsigned yoe = (unsigned)(y - era * 400);
-    unsigned doy = (153u * (m + (m > 2 ? -3u : 9u)) + 2u) / 5u + d - 1u;
+    /* Phase 1 defect H fix: the original `(m > 2 ? -3u : 9u)` applied a
+     * unary minus to unsigned (MSVC /W4 C4146); the shifted month is
+     * computed in signed arithmetic instead. */
+    int m_shift = (int)m + (m > 2 ? -3 : 9);
+    unsigned doy = ((unsigned)(153u * (unsigned)m_shift + 2u) / 5u) + d - 1u;
     unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
 
     return era * 146097 + (int64_t)doe - 719468;
@@ -245,7 +258,7 @@ static void rotate_update_symlink(const char* path)
     }
     snprintf(linkpath, sizeof(linkpath), "%s/%s.latest", dir, base);
     snprintf(tmppath, sizeof(tmppath), "%s/%s.latest.tmp.%ld", dir, base,
-             (long)getpid());
+             hpu_getpid());
 
     hpu_fs_unlink(tmppath);
     if (hpu_fs_symlink(base, tmppath) == 0) {

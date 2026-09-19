@@ -15,7 +15,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Phase 1 defect C fix (docs/implementation_notes.md): <unistd.h> is not
+ * available under MSVC; _getpid() provides the same value. */
+#if defined(_MSC_VER)
+#include <process.h>
+#define hpu_getpid() ((long)_getpid())
+#else
 #include <unistd.h>
+#define hpu_getpid() ((long)getpid())
+#endif
 
 #include "../platform/platform.h"
 
@@ -645,7 +654,7 @@ int hpu_conf_finalize(hpu_conf_t* c)
     c->env.tid_fmt = c->tid_fmt;
     c->env.source_loc_enabled = c->capture_source_loc;
     c->env.mono_base_us = (int64_t)(hpu_now_ns() / 1000ULL);
-    c->env.pid = (long)getpid();
+    c->env.pid = hpu_getpid();
 
     rc = open_outputs(c);
     if (rc != 0) {

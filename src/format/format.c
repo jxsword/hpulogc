@@ -375,9 +375,15 @@ static void rb_append_escaped_json(render_buf_t* b, const char* s, size_t n)
  */
 static const char* newline_bytes(int style, size_t* len)
 {
-    /* AUTO on POSIX is LF; CRLF is forced via the config only. */
-    (void)style;
-    if (style == HPULOGC_NEWLINE_CRLF) {
+    /* AUTO follows the platform: LF on POSIX, CRLF on Windows (spec 12). */
+    int crlf = (style == HPULOGC_NEWLINE_CRLF);
+
+#if defined(_WIN32)
+    if (style == HPULOGC_NEWLINE_AUTO) {
+        crlf = 1;
+    }
+#endif
+    if (crlf) {
         *len = 2;
         return "\r\n";
     }
@@ -474,13 +480,21 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
             int digits = 0;
             int frac_idx = find_frac_spec(tf, &digits);
             struct tm tm_buf;
-            time_t tt = (time_t)sec;
+            hpu_tm_t htm;
 
-            if (env->use_utc) {
-                gmtime_r(&tt, &tm_buf);
-            } else {
-                localtime_r(&tt, &tm_buf);
-            }
+            /* Platform contract conversion (works on POSIX and Windows);
+             * epoch_sec is seconds since the Unix epoch. */
+            hpu_localtime(sec, &htm, env->use_utc);
+            memset(&tm_buf, 0, sizeof(tm_buf));
+            tm_buf.tm_year = htm.year - 1900;
+            tm_buf.tm_mon  = htm.mon - 1;
+            tm_buf.tm_mday = htm.day;
+            tm_buf.tm_hour = htm.hour;
+            tm_buf.tm_min  = htm.min;
+            tm_buf.tm_sec  = htm.sec;
+            tm_buf.tm_wday = htm.wday;
+            tm_buf.tm_yday = htm.yday;
+            tm_buf.tm_isdst = 0;
 
             cache->prefix_len = 0;
             cache->suffix_len = 0;

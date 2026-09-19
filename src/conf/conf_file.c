@@ -7,7 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Phase 1 defect G fix (docs/implementation_notes.md): <strings.h> does
+ * not exist under MSVC; _stricmp provides the same case-insensitive
+ * compare. */
+#if defined(_MSC_VER)
+#define strcasecmp _stricmp
+#else
 #include <strings.h>
+#endif
 
 #include "conf_model.h"
 #include "ini.h"

@@ -29,14 +29,31 @@ typedef struct hpu_cond {
 } hpu_cond_t;
 
 #elif defined(HPU_PLATFORM_WIN32)
-/* Phase 2: CRITICAL_SECTION or SRWLOCK + CONDITION_VARIABLE. Placeholder
- * only; win32 sources are not compiled in Phase 1. */
+/* Phase 2: CRITICAL_SECTION + CONDITION_VARIABLE. The locked ring buffer
+ * embeds these by value, so real Win32 storage (not pointers) is required.
+ * WIN32_LEAN_AND_MEAN/NOMINMAX keep the umbrella header from polluting
+ * library translation units. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+/**
+ * @brief Mutex handle (CRITICAL_SECTION-backed; recursive superset of the
+ *        non-recursive POSIX default).
+ */
 typedef struct hpu_mutex {
-    void* impl; /*!< Phase 2: CRITICAL_SECTION storage */
+    CRITICAL_SECTION impl; /*!< Platform mutex storage */
 } hpu_mutex_t;
 
+/**
+ * @brief Condition variable handle (CONDITION_VARIABLE-backed).
+ */
 typedef struct hpu_cond {
-    void* impl; /*!< Phase 2: CONDITION_VARIABLE storage */
+    CONDITION_VARIABLE impl; /*!< Platform condition variable storage */
 } hpu_cond_t;
 
 #else

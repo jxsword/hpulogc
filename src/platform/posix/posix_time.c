@@ -26,20 +26,23 @@ int64_t hpu_realtime_ns(void)
 
 void hpu_localtime(int64_t epoch_sec, hpu_tm_t* out, int use_utc)
 {
-    struct timespec ts;
     struct tm tm_buf;
+    time_t tt;
 
     if (out == NULL) {
         return;
     }
 
-    ts.tv_sec  = (time_t)(epoch_sec / 1000000000LL);
-    ts.tv_nsec = 0;
+    /* Contract (hpu_time.h): epoch_sec is seconds since the Unix epoch.
+     * (Phase 1 defect E fix: previously divided by 1e9, which truncated
+     * second-granularity callers to the 1970 epoch; recorded in
+     * docs/implementation_notes.md.) */
+    tt = (time_t)epoch_sec;
 
     if (use_utc) {
-        gmtime_r(&ts.tv_sec, &tm_buf);
+        gmtime_r(&tt, &tm_buf);
     } else {
-        localtime_r(&ts.tv_sec, &tm_buf);
+        localtime_r(&tt, &tm_buf);
     }
 
     out->year = tm_buf.tm_year + 1900;
