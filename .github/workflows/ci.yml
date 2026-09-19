@@ -1,0 +1,70 @@
+# ============================================================================
+# hpulogc CI (GitHub Actions)
+#
+# Stage 1 (this file): Linux smoke matrix — validates the workflow itself
+# and guards the POSIX shared layer on every push/PR.
+#
+# Stage 2 (Phase 3 PR): macOS build/test matrix + ASan + dual-arch +
+# nightly TSan jobs, and a Windows (MSVC) job — see the commented
+# placeholder at the bottom; enabled in the phase3/macos PR.
+#
+# All jobs reuse the existing CMake/CTest system (HPULOGC_* options);
+# no new test framework is introduced. Path filters skip docs-only
+# changes. Ninja/CMake are preinstalled on GitHub runners.
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------
+  # Linux smoke: {gcc, clang} x {C99, C11}. The full 16-combination
+  # matrix plus presets stays in scripts/run_matrix.sh (release gate);
+  # CI runs the compiler/standard dimensions only to keep minutes low.
+  # ------------------------------------------------------------------
+  linux-smoke:
+    name: linux ${{ matrix.cc }} c${{ matrix.std }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cc: gcc,   std: 99 }
+          - { cc: gcc,   std: 11 }
+          - { cc: clang, std: 99 }
+          - { cc: clang, std: 11 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DHPULOGC_C_STANDARD=${{ matrix.std }}
+          -DHPULOGC_BUILD_SHARED=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # ------------------------------------------------------------------
+  # Phase 3 placeholder: macOS build/test matrix (to be enabled in the
+  # phase3/macos PR, spec 16.3):
+  #   - macos-matrix: {C99,C11} x {locked,lockfree} x {SPSC,MPSC}
+  #   - macos-presets: full/min/sync_thread/async_single
+  #   - macos-asan: -DHPULOGC_SANITIZER=address
+  #   - macos-arch: x86_64 via CMAKE_OSX_ARCHITECTURES (Rosetta)
+  #   - macos-tsan: workflow_dispatch + weekly schedule (spec 13.5)
+  # ------------------------------------------------------------------
