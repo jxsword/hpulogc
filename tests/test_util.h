@@ -105,7 +105,32 @@ void hpu_test_fail(const char* file, int line, const char* fmt, ...);
         return;                                \
     } while (0)
 
-/** @brief Define one test case with automatic registration. */
+/** @brief Define one test case with automatic registration.
+ *
+ * Phase 2: MSVC has no __attribute__((constructor)); registration uses
+ * the CRT user-initializer section (.CRT$XCU) instead. The registration
+ * pointer is a distinct symbol per case, which keeps the trick working
+ * under link-time section GC in the test binaries.
+ */
+#if defined(_MSC_VER)
+
+#define HPU_TEST_CONCAT_(a, b) a##b
+#define HPU_TEST_CONCAT(a, b) HPU_TEST_CONCAT_(a, b)
+
+#define TEST(name)                                                      \
+    static void hpu_test_##name(void);                                  \
+    static void hpu_test_reg_##name(void)                               \
+    {                                                                   \
+        hpu_test_register(hpu_test_##name, #name);                      \
+    }                                                                   \
+    __pragma(section(".CRT$XCU", long, read))                           \
+    __declspec(allocate(".CRT$XCU"))                                    \
+    static void (*const HPU_TEST_CONCAT(hpu_test_ptr_, name))(void) =   \
+        hpu_test_reg_##name;                                            \
+    static void hpu_test_##name(void)
+
+#else /* GCC / Clang */
+
 #define TEST(name)                                                      \
     static void hpu_test_##name(void);                                  \
     __attribute__((constructor)) static void hpu_test_auto_##name(void) \
@@ -113,5 +138,7 @@ void hpu_test_fail(const char* file, int line, const char* fmt, ...);
         hpu_test_register(hpu_test_##name, #name);                      \
     }                                                                   \
     static void hpu_test_##name(void)
+
+#endif
 
 #endif /* HPU_TEST_UTIL_H */

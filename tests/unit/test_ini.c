@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
+#include "portability.h"
 
 /** @brief Collected lines for lexer tests. */
 static char g_lines[64][2048];
@@ -138,10 +138,13 @@ TEST(ini_blank_lines_skipped)
 static int conf_parse(hpu_conf_t* c, const char* text)
 {
     char path[256];
+    char tmpdir[128];
     FILE* fp;
     int rc;
 
-    snprintf(path, sizeof(path), "/tmp/hpu_test_conf_%d.ini", (int)getpid());
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(path, sizeof(path), "%s/hpu_test_conf_%d.ini", tmpdir,
+             hpu_test_getpid());
     fp = fopen(path, "w");
     if (fp == NULL) {
         return -99;
@@ -155,7 +158,7 @@ static int conf_parse(hpu_conf_t* c, const char* text)
             hpu_conf_free(c);
         }
     }
-    unlink(path);
+    hpu_test_unlink(path);
     return rc;
 }
 #endif /* !HPU_TEST_SKIP_INI */
@@ -258,10 +261,13 @@ TEST(conf_rules_duplicate_keys_allowed)
 {
     hpu_conf_t c;
     char path[256];
+    char tmpdir[128];
     FILE* fp;
 
     CHECK_EQ(hpu_conf_defaults(&c), 0);
-    snprintf(path, sizeof(path), "/tmp/hpu_rules_%d.ini", (int)getpid());
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(path, sizeof(path), "%s/hpu_rules_%d.ini", tmpdir,
+             hpu_test_getpid());
     fp = fopen(path, "w");
     CHECK(fp != NULL);
     fputs("[rules]\napp.* = standard\napp.* = minimal\n", fp);
@@ -269,7 +275,7 @@ TEST(conf_rules_duplicate_keys_allowed)
     /* format references resolve against built-ins; no outputs needed */
     CHECK_EQ(hpu_conf_load_file(&c, path, 1), 0);
     CHECK_EQ(c.rule_count, 2);
-    unlink(path);
+    hpu_test_unlink(path);
     hpu_conf_free(&c);
 }
 #endif /* INI cases */
@@ -392,7 +398,7 @@ TEST(conf_all_sections_parse)
         "[formats]\n"
         "mine = \"%level %msg%n\"\n"
         "[outputs]\n"
-        "f = file, path=/tmp/hpu_all.log, rotate=both, max size=1mb, "
+        "f = file, path=hpu_all_tmp.log, rotate=both, max size=1mb, "
         "time unit=week, max files=5, fsync=true, symlink latest=true, "
         "rotate naming=\"{base}.{index}.log\", file perms=0600, "
         "dir perms=0700\n"
@@ -456,6 +462,7 @@ TEST(conf_all_sections_parse)
     CHECK_EQ(c.outputs[0].pub.file_mode, 0600u);
     CHECK_EQ(c.outputs[0].pub.dir_mode, 0700u);
     hpu_conf_free(&c);
+    hpu_test_unlink("hpu_all_tmp.log"); /* output opened by finalize */
 }
 
 TEST(conf_build_mismatch_warns_only)

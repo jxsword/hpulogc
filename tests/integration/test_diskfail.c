@@ -11,7 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
+#include "portability.h"
 
 /** @brief Injection plan: which ops fail and how often. */
 static int g_fail_open;
@@ -23,6 +23,7 @@ static int g_fail_remaining;
  */
 static int fail_hook(int op, const char* path)
 {
+    (void)path;
     fprintf(stderr, "HOOK op=%d remaining=%d\n", op, g_fail_remaining);
     if (g_fail_remaining <= 0) {
         return 0;
@@ -40,6 +41,7 @@ static int fail_hook(int op, const char* path)
 TEST(disk_write_failure_counts_dropped)
 {
     char logpath[256];
+    char tmpdir[128];
     hpulogc_config_t cfg;
     hpulogc_output_t out;
     static const char* names[] = { "out0" };
@@ -47,8 +49,10 @@ TEST(disk_write_failure_counts_dropped)
     hpulogc_stats_t st;
     int i;
 
-    snprintf(logpath, sizeof(logpath), "/tmp/hpu_disk_%d.log", (int)getpid());
-    unlink(logpath);
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(logpath, sizeof(logpath), "%s/hpu_disk_%d.log", tmpdir,
+             hpu_test_getpid());
+    hpu_test_unlink(logpath);
 
     hpulogc_config_default(&cfg);
     memset(&out, 0, sizeof(out));
@@ -91,17 +95,19 @@ TEST(disk_write_failure_counts_dropped)
     CHECK_EQ(st.written, 5);
 
     hpulogc_shutdown();
-    unlink(logpath);
+    hpu_test_unlink(logpath);
 }
 
 TEST(disk_open_failure_fails_init)
 {
     char logpath[256];
+    char tmpdir[128];
     hpulogc_config_t cfg;
     hpulogc_output_t out;
 
-    snprintf(logpath, sizeof(logpath), "/tmp/hpu_disk_%d_b.log",
-             (int)getpid());
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(logpath, sizeof(logpath), "%s/hpu_disk_%d_b.log", tmpdir,
+             hpu_test_getpid());
 
     hpulogc_config_default(&cfg);
     memset(&out, 0, sizeof(out));
@@ -122,5 +128,5 @@ TEST(disk_open_failure_fails_init)
     CHECK_EQ(hpulogc_flush(), HPULOGC_ERR_STATE);
     CHECK_EQ(hpulogc_init(&cfg), HPULOGC_OK);
     hpulogc_shutdown();
-    unlink(logpath);
+    hpu_test_unlink(logpath);
 }

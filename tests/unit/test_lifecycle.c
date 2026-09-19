@@ -5,12 +5,12 @@
  */
 
 #include "test_util.h"
+#include "portability.h"
 #include "hpulogc.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 /** @brief Static config helper shared by several tests. */
 static hpulogc_config_t g_cfg;
@@ -161,9 +161,12 @@ TEST(stats_counting_and_buffer_report)
     hpulogc_rule_t rule;
     hpulogc_output_t out;
     char logpath[256];
+    char tmpdir[128];
 
-    snprintf(logpath, sizeof(logpath), "/tmp/hpu_stats_%d.log", (int)getpid());
-    unlink(logpath);
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(logpath, sizeof(logpath), "%s/hpu_stats_%d.log", tmpdir,
+             hpu_test_getpid());
+    hpu_test_unlink(logpath);
 
     hpulogc_config_default(cfg_static());
     memset(&out, 0, sizeof(out));
@@ -215,7 +218,7 @@ TEST(stats_counting_and_buffer_report)
                  HPULOGC_ERR_INVALID_ARG);
     }
     hpulogc_shutdown();
-    unlink(logpath);
+    hpu_test_unlink(logpath);
 }
 
 TEST(errno_preserved_by_log_apis)

@@ -12,17 +12,18 @@
  * Not part of the default CTest run (spec 13.3: manual/nightly).
  */
 
-#include <pthread.h>
+#include "portability.h"
+#include "hpulogc.h"
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-#include <unistd.h>
-
-#include "hpulogc.h"
+#include <string.h>
 
 /** @brief Per-call samples kept for the percentile computation. */
 #define SAMPLES 200000
+/** @brief Sample storage type (hpu_test_now_ns() returns 64-bit ns). */
+typedef unsigned long long bench_sample_t;
 /** @brief Warmup logs before measuring. */
 #define WARMUP 10000
 /** @brief Message bytes (64B messages, spec 8). */
@@ -30,25 +31,19 @@
 
 /** @brief Producer argument. */
 typedef struct bench_prod {
-    pthread_barrier_t* barrier; /*!< Start barrier */
-    unsigned long* samples;     /*!< Per-op latency samples (ns) */
+    hpu_test_barrier_t* barrier; /*!< Start barrier */
+    bench_sample_t* samples;    /*!< Per-op latency samples (ns) */
     size_t sample_count;        /*!< Filled sample count */
     unsigned id;                /*!< Producer id */
 } bench_prod_t;
 
-/** @brief Monotonic ns via the platform vDSO path. */
-static uint64_t bench_now_ns(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
+/** @brief Monotonic ns via the portability shim (QPC on Windows). */
+#define bench_now_ns() hpu_test_now_ns()
 
 /**
  * @brief Percentile of a sorted sample array.
  */
-static unsigned long percentile(unsigned long* v, size_t n, double p)
+static bench_sample_t percentile(bench_sample_t* v, size_t n, double p)
 {
     size_t idx = (size_t)(p * (double)n);
 
@@ -58,10 +53,10 @@ static unsigned long percentile(unsigned long* v, size_t n, double p)
     return v[idx];
 }
 
-static int cmp_ulong(const void* a, const void* b)
+static int cmp_sample(const void* a, const void* b)
 {
-    unsigned long va = *(const unsigned long*)a;
-    unsigned long vb = *(const unsigned long*)b;
+    bench_sample_t va = *(const bench_sample_t*)a;
+    bench_sample_t vb = *(const bench_sample_t*)b;
 
     return va < vb ? -1 : (va > vb ? 1 : 0);
 }
@@ -73,7 +68,7 @@ static void* latency_producer(void* raw)
 {
     bench_prod_t* a = raw;
     char msg[128];
-    unsigned long* local = malloc(SAMPLES * sizeof(unsigned long));
+    bench_sample_t* local = malloc(SAMPLES * sizeof(bench_sample_t));
     size_t n = 0;
     int i;
 
@@ -89,7 +84,7 @@ static void* latency_producer(void* raw)
                     "%s", msg);
     }
 
-    pthread_barrier_wait(a->barrier);
+    hpu_test_barrier_wait(a->barrier);
 
     for (i = 0; i < (int)SAMPLES; i++) {
         uint64_t t0 = bench_now_ns();
@@ -110,17 +105,17 @@ static void* latency_producer(void* raw)
  */
 static int run_latency(int producers)
 {
-    pthread_barrier_t barrier;
+    hpu_test_barrier_t barrier;
     bench_prod_t args[16];
-    pthread_t threads[16];
-    unsigned long* all = NULL;
+    hpu_test_thread_t threads[16];
+    bench_sample_t* all = NULL;
     size_t total = 0;
     int i;
 
     if (producers > 16) {
         producers = 16;
     }
-    pthread_barrier_init(&barrier, NULL, (unsigned)producers);
+    hpu_test_barrier_init(&barrier, (unsigned)producers);
 
     for (i = 0; i < producers; i++) {
         args[i].barrier = &barrier;
@@ -130,19 +125,19 @@ static int run_latency(int producers)
         if (producers == 1) {
             latency_producer(&args[i]);
         } else {
-            pthread_create(&threads[i], NULL, latency_producer, &args[i]);
+            hpu_test_thread_create(&threads[i], latency_producer, &args[i]);
         }
     }
     if (producers > 1) {
         for (i = 0; i < producers; i++) {
-            pthread_join(threads[i], NULL);
+            hpu_test_thread_join(&threads[i]);
         }
     }
 
     for (i = 0; i < producers; i++) {
         total += args[i].sample_count;
     }
-    all = malloc(total * sizeof(unsigned long));
+    all = malloc(total * sizeof(bench_sample_t));
     if (all == NULL) {
         return -1;
     }
@@ -150,19 +145,21 @@ static int run_latency(int producers)
     for (i = 0; i < producers; i++) {
         if (args[i].samples != NULL) {
             memcpy(all + total, args[i].samples,
-                   args[i].sample_count * sizeof(unsigned long));
+                   args[i].sample_count * sizeof(bench_sample_t));
             total += args[i].sample_count;
             free(args[i].samples);
         }
     }
-    qsort(all, total, sizeof(unsigned long), cmp_ulong);
+    qsort(all, total, sizeof(bench_sample_t), cmp_sample);
 
-    printf("  latency producers=%d samples=%zu P50=%lu ns P99=%lu ns "
-           "P999=%lu ns\n",
-           producers, total, percentile(all, total, 0.50),
-           percentile(all, total, 0.99), percentile(all, total, 0.999));
+    printf("  latency producers=%d samples=%zu P50=%llu ns P99=%llu ns "
+           "P999=%llu ns\n",
+           producers, total,
+           (unsigned long long)percentile(all, total, 0.50),
+           (unsigned long long)percentile(all, total, 0.99),
+           (unsigned long long)percentile(all, total, 0.999));
     free(all);
-    pthread_barrier_destroy(&barrier);
+    hpu_test_barrier_destroy(&barrier);
     return 0;
 }
 
@@ -252,7 +249,7 @@ static int run_throughput(int seconds)
             if (time(NULL) > drain_deadline) {
                 break;
             }
-            usleep(1000);
+            hpu_test_sleep_ms(1);
         }
     }
     after = st.accepted;
@@ -284,7 +281,11 @@ int main(int argc, char** argv)
     hpulogc_config_default(&cfg);
     memset(&out, 0, sizeof(out));
     out.type = HPULOGC_OUT_FILE;
-    out.path = "/dev/null"; /* fast consumer; no disk influence */
+#if defined(_WIN32)
+    out.path = "NUL"; /* fast consumer; no disk influence */
+#else
+    out.path = "/dev/null";
+#endif
     cfg.outputs = &out;
     cfg.output_count = 1;
     cfg.level = HPULOGC_LEVEL_TRACE;

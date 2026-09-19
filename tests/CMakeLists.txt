@@ -69,8 +69,15 @@ hpu_add_ring_test(test_ring_locked_mpsc locked 0 1)
 hpu_add_ring_test(test_ring_lockfree_spsc lockfree 1 0)
 hpu_add_ring_test(test_ring_lockfree_mpsc lockfree 1 1)
 
-# Atomic backends: same source compiled once per forced backend.
-foreach(backend stdatomic gcc gcc_sync)
+# Atomic backends: same source compiled once per forced backend. Windows
+# has exactly one backend (Interlocked*, spec 4.3); POSIX tests the
+# stdatomic + GCC paths.
+if(WIN32)
+    set(HPU_ATOMIC_TEST_BACKENDS MSVC)
+else()
+    set(HPU_ATOMIC_TEST_BACKENDS stdatomic gcc gcc_sync)
+endif()
+foreach(backend ${HPU_ATOMIC_TEST_BACKENDS})
     set(tname test_atomic_backend_${backend})
     add_executable(${tname} unit/test_atomic.c)
     target_include_directories(${tname} PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -94,9 +101,10 @@ hpu_add_test_binary(test_format SRCS unit/test_format.c)
 hpu_add_test_binary(test_rotate SRCS unit/test_rotate.c)
 hpu_add_test_binary(test_lifecycle SRCS unit/test_lifecycle.c)
 hpu_add_test_binary(test_pipeline SRCS integration/test_pipeline.c)
-if(NOT HPULOGC_SANITIZER MATCHES "thread" AND HPULOGC_ENABLE_INI)
-    # TSan cannot model fork()+threads; the fork behaviors need the INI
-    # path (fork behavior is a config-file-only key).
+if(NOT WIN32 AND NOT HPULOGC_SANITIZER MATCHES "thread"
+   AND HPULOGC_ENABLE_INI)
+    # fork() behaviors: POSIX only (Windows has no fork, spec 9); TSan
+    # cannot model fork()+threads either; needs the INI path.
     hpu_add_test_binary(test_fork SRCS integration/test_fork.c)
 endif()
 hpu_add_test_binary(test_signal_safe SRCS integration/test_signal_safe.c)
@@ -107,7 +115,9 @@ hpu_add_test_binary(test_diskfail SRCS integration/test_diskfail.c)
 # ---------------------------------------------------------------------------
 foreach(bench_name bench_log bench_memory)
     add_executable(${bench_name} EXCLUDE_FROM_ALL bench/${bench_name}.c)
-    target_include_directories(${bench_name} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+    target_include_directories(${bench_name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/include)
     target_link_libraries(${bench_name} PRIVATE hpulogc Threads::Threads)
     target_compile_options(${bench_name} PRIVATE ${HPULOGC_WARNING_FLAGS})
     if(HPU_SANITIZER_FLAGS)

@@ -7,9 +7,10 @@
  */
 
 #include "test_util.h"
+#include "portability.h"
 #include "atomic/hpulogc_atomic.h"
 
-#include <pthread.h>
+#include <string.h>
 
 TEST(atomic_u32_basic)
 {
@@ -99,18 +100,18 @@ static void* contend_worker(void* raw)
 
 TEST(atomic_contended_add)
 {
-    pthread_t threads[CONTEND_THREADS];
+    hpu_test_thread_t threads[CONTEND_THREADS];
     unsigned i;
 
     hpu_at_store_u32(&g_contended_u32, 0, HPU_MO_RELAXED);
     hpu_at_store_u64(&g_contended_u64, 0, HPU_MO_RELAXED);
 
     for (i = 0; i < CONTEND_THREADS; i++) {
-        CHECK_EQ(pthread_create(&threads[i], NULL, contend_worker,
-                                (void*)(uintptr_t)i), 0);
+        CHECK_EQ(hpu_test_thread_create(&threads[i], contend_worker,
+                                        (void*)(uintptr_t)i), 0);
     }
     for (i = 0; i < CONTEND_THREADS; i++) {
-        pthread_join(threads[i], NULL);
+        hpu_test_thread_join(&threads[i]);
     }
     CHECK_EQ(hpu_at_load_u32(&g_contended_u32, HPU_MO_SEQ_CST),
              CONTEND_THREADS * CONTEND_ITERS);
@@ -122,11 +123,13 @@ TEST(atomic_contended_add)
  * @brief CAS-based flag spin: exercises acquire/release pairing.
  */
 static hpu_atomic_u32 g_cas_flag;
+/** @brief Shared acquisition counter (thread-return values are not
+ *         portable across the test shim). */
+static hpu_atomic_u32 g_cas_acquired;
 
 static void* cas_flag_worker(void* raw)
 {
     unsigned id = (unsigned)(uintptr_t)raw;
-    int acquired = 0;
     int i;
 
     (void)id;
@@ -135,32 +138,28 @@ static void* cas_flag_worker(void* raw)
 
         if (hpu_at_cas_u32(&g_cas_flag, &expected, 1, HPU_MO_ACQ_REL,
                            HPU_MO_ACQUIRE)) {
-            acquired++;
+            hpu_at_fetch_add_u32(&g_cas_acquired, 1, HPU_MO_ACQ_REL);
             hpu_at_store_u32(&g_cas_flag, 0, HPU_MO_RELEASE);
         }
     }
-    return (void*)(uintptr_t)acquired;
+    return NULL;
 }
 
 TEST(atomic_cas_flag_handoff)
 {
-    pthread_t threads[CONTEND_THREADS];
+    hpu_test_thread_t threads[CONTEND_THREADS];
     unsigned i;
-    long total = 0;
 
     hpu_at_store_u32(&g_cas_flag, 0, HPU_MO_RELAXED);
+    hpu_at_store_u32(&g_cas_acquired, 0, HPU_MO_RELAXED);
     for (i = 0; i < CONTEND_THREADS; i++) {
-        CHECK_EQ(pthread_create(&threads[i], NULL, cas_flag_worker,
-                                (void*)(uintptr_t)i), 0);
+        CHECK_EQ(hpu_test_thread_create(&threads[i], cas_flag_worker,
+                                        (void*)(uintptr_t)i), 0);
     }
     for (i = 0; i < CONTEND_THREADS; i++) {
-        void* ret = NULL;
-
-        pthread_join(threads[i], &ret);
-        total += (long)(uintptr_t)ret;
+        hpu_test_thread_join(&threads[i]);
     }
-    /* every acquisition eventually released: total is a positive multiple
-     * of nothing in particular, but every acquire paired with a store 0 */
-    CHECK(total > 0);
+    /* every acquisition eventually released */
+    CHECK(hpu_at_load_u32(&g_cas_acquired, HPU_MO_SEQ_CST) > 0);
     CHECK_EQ(hpu_at_load_u32(&g_cas_flag, HPU_MO_SEQ_CST), 0);
 }

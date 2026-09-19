@@ -8,11 +8,12 @@
  */
 
 #include "test_util.h"
+#include "portability.h"
 #include "atomic/hpulogc_atomic.h"
 #include "ring/ringbuf.h"
 
-#include <pthread.h>
-#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
 
 #ifndef HPU_RING_TEST_IMPL
 #define HPU_RING_TEST_IMPL 0
@@ -25,9 +26,14 @@
  * seqlock-style marker protocol (see docs/implementation_notes.md);
  * ThreadSanitizer cannot model that, so those cases are skipped under
  * TSan. The discard policy is fully TSan-clean. */
-#if defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && __has_feature(thread_sanitizer))
+#if defined(__SANITIZE_THREAD__)
 #define HPU_RING_SKIP_OVERWRITE 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define HPU_RING_SKIP_OVERWRITE 1
+#else
+#define HPU_RING_SKIP_OVERWRITE 0
+#endif
 #else
 #define HPU_RING_SKIP_OVERWRITE 0
 #endif
@@ -255,8 +261,7 @@ typedef struct wait_ctx {
     int produced;       /*!< Successful puts */
 } wait_ctx_t;
 
-static void* wait_producer_thread(void* raw)
-{
+static void* wait_producer_thread(void* raw){
     wait_ctx_t* c = raw;
     int i;
 
@@ -280,13 +285,14 @@ TEST(ring_wait_policy)
     wait_ctx_t wctx;
     hpu_ring_view_t v;
     char staging[STAGING_SIZE];
-    pthread_t producer;
+    hpu_test_thread_t producer;
     unsigned delivered = 0;
 
     CHECK(r != NULL);
     memset(&wctx, 0, sizeof(wctx));
     wctx.ring = r;
-    CHECK_EQ(pthread_create(&producer, NULL, wait_producer_thread, &wctx), 0);
+    CHECK_EQ(hpu_test_thread_create(&producer, wait_producer_thread,
+                                    &wctx), 0);
 
     while (delivered < 500) {
         if (hpu_ring_get(r, &v, staging, sizeof(staging), 100) ==
@@ -294,7 +300,7 @@ TEST(ring_wait_policy)
             delivered++;
         }
     }
-    pthread_join(producer, NULL);
+    hpu_test_thread_join(&producer);
     CHECK_EQ(wctx.produced, 500);
     CHECK_EQ(delivered, 500);
     hpu_ring_destroy(r);
@@ -340,7 +346,8 @@ typedef struct stress_ctx {
     int strict;                           /*!< Expect gap-free sequences */
 } stress_ctx_t;
 
-__attribute__((unused)) static void stress_producer(hpu_ring_t* r, unsigned id, unsigned count,
+#if HPU_RING_TEST_CONC == 1
+static void stress_producer(hpu_ring_t* r, unsigned id, unsigned count,
                             unsigned long long* dropped_out)
 {
     unsigned i;
@@ -357,6 +364,7 @@ __attribute__((unused)) static void stress_producer(hpu_ring_t* r, unsigned id, 
     }
     *dropped_out = drops;
 }
+#endif
 
 /**
  * @brief Verify one consumed record preserves per-producer ordering.
@@ -460,7 +468,7 @@ TEST(ring_stress_mpsc_no_loss)
     char staging[STAGING_SIZE];
     stress_ctx_t ctx;
     mpsc_arg_t args[STRESS_PRODUCERS];
-    pthread_t threads[STRESS_PRODUCERS];
+    hpu_test_thread_t threads[STRESS_PRODUCERS];
     unsigned i;
     int all_delivered;
 
@@ -473,8 +481,8 @@ TEST(ring_stress_mpsc_no_loss)
         args[i].ring = r;
         args[i].id = i;
         args[i].dropped = 0;
-        CHECK_EQ(pthread_create(&threads[i], NULL, mpsc_producer_thread,
-                                &args[i]), 0);
+        CHECK_EQ(hpu_test_thread_create(&threads[i], mpsc_producer_thread,
+                                        &args[i]), 0);
     }
 
     /* Consume while producing; exit once every producer finished and the
@@ -498,7 +506,7 @@ TEST(ring_stress_mpsc_no_loss)
     }
 
     for (i = 0; i < STRESS_PRODUCERS; i++) {
-        pthread_join(threads[i], NULL);
+        hpu_test_thread_join(&threads[i]);
         CHECK_EQ(args[i].dropped, 0);
     }
     hpu_ring_close(r);
@@ -578,7 +586,7 @@ TEST(ring_pressure_overwrite_accounting)
 {
     hpu_ring_t* r = hpu_ring_create(2048, POL_OVERWRITE, RING_TEST_SPSC);
     slow_ctx_t ctx;
-    pthread_t consumer;
+    hpu_test_thread_t consumer;
     unsigned long long total = 0;
     unsigned long long dropped = 0, overwritten = 0;
     unsigned i;
@@ -586,7 +594,8 @@ TEST(ring_pressure_overwrite_accounting)
     CHECK(r != NULL);
     memset(&ctx, 0, sizeof(ctx));
     ctx.ring = r;
-    CHECK_EQ(pthread_create(&consumer, NULL, slow_consumer_thread, &ctx), 0);
+    CHECK_EQ(hpu_test_thread_create(&consumer, slow_consumer_thread, &ctx),
+             0);
 
     for (i = 0; i < 20000; i++) {
         hpu_ring_msg_t msg;
@@ -596,12 +605,12 @@ TEST(ring_pressure_overwrite_accounting)
         CHECK_EQ(hpu_ring_put(r, &msg), HPU_RING_OK);
         total++;
         if (i % 100 == 0) {
-            usleep(100); /* let the consumer fall behind sometimes */
+            hpu_test_sleep_ms(1); /* let the consumer fall behind */
         }
     }
     hpu_at_store_u32(&ctx.stop, 1, HPU_MO_RELEASE);
     hpu_ring_close(r);
-    pthread_join(consumer, NULL);
+    hpu_test_thread_join(&consumer);
     hpu_ring_counters(r, &dropped, &overwritten);
     /* Exact accounting: produced == delivered + overwritten */
     CHECK_EQ(ctx.delivered + overwritten, total);
@@ -615,7 +624,7 @@ TEST(ring_pressure_discard_accounting)
 {
     hpu_ring_t* r = hpu_ring_create(2048, POL_DISCARD, 0);
     slow_ctx_t ctx;
-    pthread_t consumer;
+    hpu_test_thread_t consumer;
     unsigned long long total = 0;
     unsigned long long producer_dropped = 0;
     unsigned long long dropped = 0, overwritten = 0;
@@ -624,7 +633,8 @@ TEST(ring_pressure_discard_accounting)
     CHECK(r != NULL);
     memset(&ctx, 0, sizeof(ctx));
     ctx.ring = r;
-    CHECK_EQ(pthread_create(&consumer, NULL, slow_consumer_thread, &ctx), 0);
+    CHECK_EQ(hpu_test_thread_create(&consumer, slow_consumer_thread, &ctx),
+             0);
 
     for (i = 0; i < 20000; i++) {
         hpu_ring_msg_t msg;
@@ -638,7 +648,7 @@ TEST(ring_pressure_discard_accounting)
     }
     hpu_at_store_u32(&ctx.stop, 1, HPU_MO_RELEASE);
     hpu_ring_close(r);
-    pthread_join(consumer, NULL);
+    hpu_test_thread_join(&consumer);
     hpu_ring_counters(r, &dropped, &overwritten);
     CHECK_EQ(ctx.delivered + producer_dropped, total);
     CHECK_EQ((int)overwritten, 0);

@@ -5,6 +5,7 @@
  */
 
 #include "test_util.h"
+#include "portability.h"
 #include "output/rotate.h"
 #include "output/output.h"
 #include "../src/platform/platform.h"
@@ -19,21 +20,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /** @brief Per-test scratch directory. */
 static char g_dir[256];
 
 /**
- * @brief Create a fresh scratch directory under /tmp.
+ * @brief Create a fresh scratch directory (unique per pid).
  */
 static void make_scratch(void)
 {
-    snprintf(g_dir, sizeof(g_dir), "/tmp/hpu_rot_%d", (int)getpid());
-    system("rm -rf /tmp/hpu_rot_$(x=$(pgrep -f hpu_rot 2>/dev/null); echo) 2>/dev/null || true");
-    /* simple unique dir per pid */
-    mkdir(g_dir, 0755);
+    char tmpdir[128];
+
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(g_dir, sizeof(g_dir), "%s/hpu_rot_%d", tmpdir,
+             hpu_test_getpid());
+    hpu_test_rmtree(g_dir);
+    if (hpu_test_mkdir(g_dir) != 0) {
+        FAIL_MSG("cannot create scratch dir %s", g_dir);
+    }
 }
 
 /**
@@ -41,10 +45,7 @@ static void make_scratch(void)
  */
 static void clean_scratch(void)
 {
-    char cmd[300];
-
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
-    system(cmd);
+    hpu_test_rmtree(g_dir);
 }
 
 /**
@@ -57,8 +58,55 @@ static void write_file(const char* path, size_t n)
     if (fp != NULL) {
         fwrite("x", 1, 1, fp);
         fclose(fp);
-        truncate(path, (off_t)n);
+        hpu_test_truncate_file(path, (long)n);
     }
+}
+
+/**
+ * @brief Count archive names in the scratch dir matching
+ *        "app.<8 digits>_<6 digits>.<index>.log".
+ */
+static int count_timestamp_archives(void)
+{
+    hpu_dir_entry_t* entries = NULL;
+    size_t count = 0;
+    size_t i;
+    int matches = 0;
+
+    if (hpu_fs_list_dir(g_dir, &entries, &count) != 0) {
+        return -1;
+    }
+    for (i = 0; i < count; i++) {
+        const char* n = entries[i].name;
+        size_t len = strlen(n);
+        size_t k;
+        int ok = len == strlen("app.20231114_221320.1.log");
+
+        if (ok) {
+            if (strncmp(n, "app.", 4) != 0 || n[12] != '_' ||
+                n[19] != '.') {
+                ok = 0;
+            }
+            for (k = 4; ok && k < 12; k++) {
+                if (n[k] < '0' || n[k] > '9') {
+                    ok = 0;
+                }
+            }
+            for (k = 13; ok && k < 19; k++) {
+                if (n[k] < '0' || n[k] > '9') {
+                    ok = 0;
+                }
+            }
+            if (ok && strcmp(n + 19, ".1.log") != 0) {
+                ok = 0;
+            }
+        }
+        if (ok) {
+            matches++;
+        }
+    }
+    hpu_fs_list_free(entries, count);
+    return matches;
 }
 
 #if !HPU_TEST_SKIP_ROTATE
@@ -101,10 +149,8 @@ TEST(rotate_naming_and_symlink)
     hpu_rotate_cfg_t cfg;
     char path[300];
     char latest[320];
-    char linktarget[300];
     int fd;
     int64_t size = 100;
-    ssize_t n;
 
     make_scratch();
     snprintf(path, sizeof(path), "%s/app.log", g_dir);
@@ -126,25 +172,23 @@ TEST(rotate_naming_and_symlink)
     hpu_fs_close(fd);
 
     /* archive exists with the template pattern */
-    {
-        char cmd[400];
-        char buf[1024];
-        FILE* fp;
+    CHECK_EQ(count_timestamp_archives(), 1);
 
-        snprintf(cmd, sizeof(cmd), "ls %s | grep -c 'app\\.[0-9]\\{8\\}_[0-9]\\{6\\}\\.1\\.log'", g_dir);
-        fp = popen(cmd, "r");
-        CHECK(fp != NULL);
-        fgets(buf, sizeof(buf), fp);
-        pclose(fp);
-        CHECK_EQ(atoi(buf), 1);
-    }
-
-    /* .latest symlink points at the fresh active file */
     snprintf(latest, sizeof(latest), "%s/app.log.latest", g_dir);
-    n = readlink(latest, linktarget, sizeof(linktarget) - 1);
-    CHECK(n > 0);
-    linktarget[n] = '\0';
-    CHECK_STREQ(linktarget, "app.log");
+#if defined(_WIN32)
+    /* Windows: .latest symlinks are ignored (spec 4.7); nothing is
+     * created and rotation still succeeds. */
+    CHECK_EQ(hpu_fs_stat_kind(latest), HPU_FS_MISSING);
+#else
+    {
+        char linktarget[300];
+        ssize_t n = readlink(latest, linktarget, sizeof(linktarget) - 1);
+
+        CHECK(n > 0);
+        linktarget[n] = '\0';
+        CHECK_STREQ(linktarget, "app.log");
+    }
+#endif
 
     clean_scratch();
 }
