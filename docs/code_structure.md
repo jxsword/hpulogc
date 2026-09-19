@@ -54,7 +54,22 @@ hpulogc/
 │   │   ├── darwin/
 │   │   │   └── darwin_platform.h Phase 3 占位（契约快照 + 移植说明）
 │   │   └── win32/
-│   │       └── win32_platform.h  Phase 2 占位（契约快照 + 移植说明）
+│   │       ├── win32_platform.h  契约快照头（Phase 2 起附实现文件）
+│   │       ├── win32_sync.c      CRITICAL_SECTION + CONDITION_VARIABLE
+│   │       ├── win32_thread.c    _beginthreadex/join；atfork 空实现
+│   │       ├── win32_time.c      QPC / GetSystemTimePreciseAsFileTime
+│   │       │                     / localtime_s / _mktime64
+│   │       ├── win32_fs.c        CreateFileW(UTF-8→UTF-16)/WriteFile/
+│   │       │                     FlushFileBuffers/MoveFileExW/
+│   │       │                     FindFirstFileW；权限忽略+一次性告警；
+│   │       │                     VT 启用与 CRT 二进制模式
+│   │       ├── win32_path.c      双分隔符 dirname/basename/stem/
+│   │       │                     normalize（ASCII 大小写折叠）
+│   │       ├── win32_watcher.c   恒轮询后端（GetFileAttributesExW
+│   │       │                     mtime+size 基线）
+│   │       ├── win32_tid.c       GetCurrentThreadId
+│   │       ├── win32_tls.c       FlsAlloc 族（线程退出析构回调）
+│   │       └── win32_signal.c    无 SIGHUP：install 恒 -1
 │   ├── conf/
 │   │   ├── ini.h                 zlog 词法解析器契约（1024B 物理行、
 │   │   │                         注释/引号/续行）
@@ -82,6 +97,10 @@ hpulogc/
 │   │                             （UTC 民历算法/本地 mktime）、冲突递增、
 │   │                             max files 清理、.latest 符号链接
 │   └── core/
+│       │                         ★ Phase 2 重建（Phase 1 基线缺失本
+│       │                         目录；依据规范+决策记录+既有测试断言
+│       │                         重写，符号名与 Phase 1 文档一致，
+│       │                         详见 implementation_notes Phase 2 节 A）
 │       ├── core_internal.h       运行时状态、注册表/节流结构、内部 API
 │       ├── core.c                生命周期（三入口 init/shutdown）、
 │       │                         运行时控制 API、stats、build info、
@@ -103,7 +122,11 @@ hpulogc/
 │   ├── multi_category.c          多类目路由 + 每类目级别覆盖
 │   └── custom_format.c           配置文件 + 自定义命名格式 + 轮转
 ├── tests/
-│   ├── test_util.h               自注册 TEST 宏测试框架（头）
+│   ├── test_util.h               自注册 TEST 宏测试框架（头；
+│   │                             MSVC 走 .CRT$XCU 段注册分支）
+│   ├── portability.h             Phase 2：测试跨平台 shim（线程/屏障/
+│   │                             睡眠/临时目录/rmtree/popen/QPC）
+│   ├── check_windows_behavior.c  Phase 2：Windows 行为核查（手动运行）
 │   ├── test_main.c               运行器实现 + main
 │   ├── unit/
 │   │   ├── test_ring.c           环形缓冲（4 构建组合 × 全策略、并发
@@ -129,7 +152,11 @@ hpulogc/
 │       ├── bench_log.c           延迟（逐条/摊销）+ 吞吐
 │       └── bench_memory.c        min 基线内存（statm + mallinfo2）
 ├── scripts/
-│   └── run_matrix.sh             16 组合矩阵 + 4 预设一键验证
+│   ├── run_matrix.sh             16 组合矩阵 + 4 预设一键验证（POSIX）
+│   ├── run_matrix.ps1            Phase 2：{99,11}×{锁,无锁}×{SPSC,MPSC}
+│   │                             8 组合 + 4 预设（MSVC，零告警门禁）
+│   ├── msvc_build.bat            Phase 2：MSVC 环境包装（vcvars64）
+│   └── msvc_env.sh               Phase 2：Git Bash 环境变量参考
 ├── cmake/
 │   └── hpulogcConfig.cmake.in    find_package 包配置模板
 ├── CMakeLists.txt                全部选项/后端探测/sanitizer/预设/安装
@@ -158,18 +185,21 @@ hpulogc/
 动态库导出属性在公共头 `HPULOGC_API`（GCC/Clang visibility + Windows
 dllexport/dllimport），不属平台层。
 
-## 3. Phase 2/3 预留说明
+## 3. Phase 2/3 实施状态（Phase 2 已交付）
 
-- `src/platform/win32/win32_platform.h`：仅契约快照与逐契约的 win32
-  实现要点（含 `_commit`=fsync、`FindFirstFile` 目录扫描语义、权限/
-  symlink 忽略并告警等 §16.2 要求的备忘）。Phase 2 在此目录新增
-  `win32_sync.c`、`win32_fs.c` 等实现文件并在 CMake 平台分支接入；
-  **不修改任何公共代码**。
+- `src/platform/win32/`：✅ 全部契约实现完成（9 个 .c 文件 + 快照
+  头），CMake WIN32 分支接入。契约冻结清单核对：本目录仅实现契约
+  声明的函数，未新增/修改任何契约签名（hpu_sync.h 的 WIN32 结构体
+  分支为 Phase 1 预定的 Phase 2 填充点）。实现要点与 Windows 特有
+  行为决策见 implementation_notes.md 的 Phase 2 章节。
+- `src/atomic/atomic_msvc.h`：✅ 启用并验证——MSVC 与 MinGW-w64
+  均走 `HPULOGC_ATOMIC_BACKEND_MSVC`（Windows 后端唯一，§4.3）；
+  Phase 2 修正 MinGW 兼容（_ReadBarrier）与 32 位目标 64 原子读写。
+- `docs/perf_report_windows.md`：✅ 五指标实测 + 与 Phase 1 同口径
+  对比 + min 体积（20,428 B）。
 - `src/platform/darwin/darwin_platform.h`：Phase 3 需新增的仅
   `darwin_tid.c`（pthread_threadid_np）与 `darwin_watcher.c`
   （kqueue/轮询）；其余复用 `src/platform/posix/`。
-- `src/atomic/atomic_msvc.h`：Phase 2 的 MSVC 后端已完整实现
-  （Interlocked* 族），Phase 2 仅需在 CMake 平台分支启用。
 
 ## 4. CMake 选项与四预设
 
