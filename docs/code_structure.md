@@ -200,11 +200,14 @@ dllexport/dllimport），不属平台层。
   Phase 2 修正 MinGW 兼容（_ReadBarrier）与 32 位目标 64 原子读写。
 - `docs/perf_report_windows.md`：✅ 五指标实测 + 与 Phase 1 同口径
   对比 + min 体积（20,428 B）。
-- `src/platform/darwin/`：✅ Phase 3 已交付——`darwin_sync.c`
-  （macOS condattr 仅支持 REALTIME，timedwait 改 relative_np）与
-  `darwin_tid.c`（pthread_threadid_np）；watcher 按 §16.3 选择
-  轮询回退（kqueue 为可选增强，遗留）；其余复用 posix 层。
-  适配清单与验证方式见 implementation_notes.md 的 Phase 3 章节。
+- `src/platform/darwin/`：✅ Phase 3 已交付并经 **macOS CI 全绿**
+  验证（GitHub Actions 矩阵，见 implementation_notes.md Phase 3
+  章节 E）——`darwin_sync.c`（macOS condattr 仅支持 REALTIME，
+  timedwait 改 relative_np）与 `darwin_tid.c`
+  （pthread_threadid_np）；watcher 按 §16.3 选择轮询回退（kqueue
+  为可选增强，遗留）；其余复用 posix 层。Apple Clang 双标准
+  （C11 stdatomic / C99 __atomic_*）、双架构（arm64/x86_64-
+  Rosetta）与 ASan 均在 CI 矩阵中实测通过。
 
 ## 4. CMake 选项与四预设
 

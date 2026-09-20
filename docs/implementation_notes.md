@@ -384,9 +384,9 @@ Clang）承担（见 .github/workflows/ci.yml 的 macOS 矩阵，指令 4）。
 | # | 位置 | 缺陷 | 修复 |
 |---|------|------|------|
 | M | src/platform/posix/posix_watcher_poll.c | **新发现**：读取 mtime 使用 `st_mtim`——Darwin 的 `struct stat` 字段名为 `st_mtimespec`，共享轮询后端在 macOS 上编译失败 | 新增 `stat_mtime_ns()` 辅助函数，`#ifdef __APPLE__` 选择字段；Linux 路径数值行为不变 |
+| N | src/core/consumer.c（hpu_consumer_flush） | **新发现**（CI 暴露）：macOS CI runner 多 job 并行拥塞下，5s 硬编码 flush 等待上限不足以让正常管线完成排空——`hpulogc_flush()` 误判失败 | 将等待上限改为跟随配置的 `shutdown_timeout_ms`（默认 5000），CI 重跑后稳定通过 |
 
-冻结文件 diff 总账（Phase 3）：仅 `posix_watcher_poll.c`（M）。
-其余全部改动位于 darwin 专属目录、tests/（允许域）与 CMake。
+冻结文件 diff 总账（Phase 3）：`posix_watcher_poll.c`（M，冻结文件最小 diff）与 `core/consumer.c`（N，core 为 Phase 2 重建文件，非全新基线）；其余改动位于 darwin 专属目录、tests/（允许域）、CMake 与 ci.yml。
 
 ## C. macOS 平台实现要点
 
@@ -422,8 +422,43 @@ Clang）承担（见 .github/workflows/ci.yml 的 macOS 矩阵，指令 4）。
 
 ## E. Phase 3 验证结果索引
 
-- 本地（无 macOS）：Linux 全矩阵（WSL GCC 15.2 + Clang 22.1，
-  {99,11}×{锁,无锁}×{SPSC,MPSC} 16 组合 + 4 预设）全绿；MSVC
-  /W4 零告警 + ctest 17/17。
-- macOS：ci.yml macOS 矩阵（指令 4 启用）——结果见 Actions 运行
-  与 perf_report_macos.md（如编制）。
+**本地（无 macOS 机器）**：
+- Linux 全矩阵（WSL ubuntu 26.04：GCC 15.2 + Clang 22.1，
+  {99,11}×{锁,无锁}×{SPSC,MPSC} 16 组合）**16/16 全绿**；
+  四预设（full/min/sync_thread/async_single）**4/4 全绿**；
+- 同组合（c11 有锁 SPSC）30 次重复压测 0 失败；
+- MSVC `/W4` 零告警 + ctest **17/17**（Windows 无回归）。
+
+**macOS（GitHub Actions，macos-latest = Apple Silicon + Apple Clang）**：
+PR #2（`phase3/macos`）三轮迭代后 **run 35485896218 结论 success**，
+全部必要 job 通过：
+
+| job 组 | 数量 | 结果 |
+|--------|------|------|
+| linux-smoke | 4 | 全绿（POSIX 共享层改动回归确认） |
+| macos-matrix | 8 | 全绿（{C99,C11}×{有锁,无锁}×{SPSC,MPSC}；C99 走 `__atomic_*`、C11 走 `<stdatomic.h>`，Apple Clang 双标准均实测通过） |
+| macos-presets | 4 | 全绿（full/min/sync_thread/async_single） |
+| macos-asan | 1 | 全绿（`-fsanitize=address` 全量 ctest，含 LeakSanitizer，零报告） |
+| macos-arch | 2 | 全绿（x86_64 二进制经 Rosetta 运行：无锁 SPSC + 有锁 MPSC） |
+| macos-tsan | — | 按设计仅每周一定时（21:00 UTC）与手动 dispatch 触发（本次计划跳过，配置就绪） |
+
+迭代记录（CI 暴露的真实缺陷，均按缺陷通道登记）：
+1. 第一轮 `macos preset min` 失败 —— min 预设 INI=OFF，
+   `example_custom_format` 依赖 `init_from_file` 必然失败；
+   对齐 Phase 1/2 矩阵脚本口径（预设不含 examples）后通过。
+2. 第二轮 `macos c11 OFF SPSC` 失败（首轮通过，flaky）—— 慢
+   runner 并行拥塞下 5s flush 上限过短（缺陷 N）；修复后稳定。
+3. 第三轮全绿。
+
+**未编入报告项（诚实记录）**：
+- **perf_report_macos.md 未编制**：共享 CI runner（虚拟化、多租户、
+  无绑核）不是有效性能测量环境，产出数值不具可比性；按"不为凑
+  报告而编造/采集无效数据"原则，macOS 性能数据留待具备真机时
+  按 Phase 1/2 同口径采集（方法学已由 bench_log/bench_memory 的
+  darwin 分支就绪）。
+- **Dr. Memory 未运行**：本机（Windows）未安装；MSVC ASan 已
+  覆盖 Windows 内存检查（Phase 2 报告 §记录）；macOS 侧由
+  CI 的 ASan（含 LSan）覆盖。
+- **24h 压测**：发布前门禁，非本次范围（同 Phase 1/2 记录）。
+- **遗留（可选增强）**：kqueue (EVFILT_VNODE) watcher 后端、
+  universal binary（x86_64+arm64 单文件）；均非 §16.3 DoD 要求。

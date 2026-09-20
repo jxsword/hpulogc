@@ -1,6 +1,8 @@
 # hpulogc — High Performance Log in C
 
-纯 C99/C11、零第三方依赖、跨平台的高性能日志库。
+[![CI](https://github.com/jxsword/hpulogc/actions/workflows/ci.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/ci.yml)
+
+纯 C99/C11、零第三方依赖、跨平台的高性能日志库（Linux / Windows / macOS）。
 
 - **无锁环形缓冲**（SPSC/MPSC，discard/overwrite 溢出策略）与有锁实现二选一
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
