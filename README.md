@@ -95,6 +95,22 @@ cmake --build build-mingw && (cd build-mingw && ctest)
 
 MinGW-w64 与 MSVC 共用同一原子后端（`Interlocked*`，Windows 后端唯一）。
 
+### macOS（Phase 3）
+
+要求 macOS 10.12+（clock_gettime）；Apple Clang 即装即用：
+
+```bash
+cmake -S . -B build -G Ninja
+cmake --build build && ctest --test-dir build
+```
+
+- 原子后端：C11 走 `<stdatomic.h>`、C99 走 `__atomic_*`（自动探测）；
+- 同步原语复用 pthread；timedwait 用 Apple 的 relative 等待
+  （macOS 的 `pthread_condattr_setclock` 仅支持 REALTIME）；
+- 线程 ID 为 `pthread_threadid_np` 系统级 ID；
+- 配置文件热加载为轮询后端（kqueue 为可选增强，§16.3）；
+- 双架构（x86_64/ARM64）与 ASan/TSan 由 GitHub Actions 矩阵覆盖。
+
 常用选项（全平台一致）：
 
 ```bash

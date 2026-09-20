@@ -278,11 +278,6 @@ typedef struct hpu_test_thread {
     pthread_t handle; /*!< pthread handle */
 } hpu_test_thread_t;
 
-/** @brief Barrier (POSIX). */
-typedef struct hpu_test_barrier {
-    pthread_barrier_t barrier; /*!< pthread barrier */
-} hpu_test_barrier_t;
-
 /** @brief Thread entry trampoline signature (pthread shape). */
 typedef void* (*hpu_test_thread_fn)(void*);
 
@@ -298,6 +293,59 @@ static inline void hpu_test_thread_join(hpu_test_thread_t* t)
 {
     (void)pthread_join(t->handle, NULL);
 }
+
+#if defined(__APPLE__)
+/* Apple's pthreads ship no pthread_barrier_t (POSIX-optional); the same
+ * counting barrier built on mutex + cond as the Windows branch is used
+ * there (Phase 3). */
+/** @brief Barrier (Apple: mutex + cond counting barrier). */
+typedef struct hpu_test_barrier {
+    pthread_mutex_t mu;    /*!< Count guard */
+    pthread_cond_t  cond;  /*!< Release signal */
+    unsigned        count; /*!< Parties arrived so far */
+    unsigned        total; /*!< Parties required */
+} hpu_test_barrier_t;
+
+/** @brief Initialize a barrier. @return 0 on success, -1 on failure. */
+static inline int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
+{
+    b->total = total;
+    b->count = 0;
+    if (pthread_mutex_init(&b->mu, NULL) != 0) {
+        return -1;
+    }
+    if (pthread_cond_init(&b->cond, NULL) != 0) {
+        pthread_mutex_destroy(&b->mu);
+        return -1;
+    }
+    return 0;
+}
+
+/** @brief Wait at the barrier until all parties arrived. */
+static inline void hpu_test_barrier_wait(hpu_test_barrier_t* b)
+{
+    pthread_mutex_lock(&b->mu);
+    if (++b->count == b->total) {
+        b->count = 0;
+        pthread_cond_broadcast(&b->cond);
+    } else {
+        pthread_cond_wait(&b->cond, &b->mu);
+    }
+    pthread_mutex_unlock(&b->mu);
+}
+
+/** @brief Destroy a barrier. */
+static inline void hpu_test_barrier_destroy(hpu_test_barrier_t* b)
+{
+    pthread_mutex_destroy(&b->mu);
+    pthread_cond_destroy(&b->cond);
+    (void)b;
+}
+#else /* POSIX with pthread_barrier (Linux, glibc and most others) */
+/** @brief Barrier (POSIX). */
+typedef struct hpu_test_barrier {
+    pthread_barrier_t barrier; /*!< pthread barrier */
+} hpu_test_barrier_t;
 
 /** @brief Initialize a barrier. @return 0 on success. */
 static inline int hpu_test_barrier_init(hpu_test_barrier_t* b, unsigned total)
@@ -317,6 +365,7 @@ static inline void hpu_test_barrier_destroy(hpu_test_barrier_t* b)
     pthread_barrier_destroy(&b->barrier);
     (void)b;
 }
+#endif /* __APPLE__ */
 
 /** @brief Millisecond sleep. */
 static inline void hpu_test_sleep_ms(unsigned ms)

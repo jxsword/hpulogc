@@ -52,7 +52,10 @@ hpulogc/
 │   │   │   └── linux_watcher.c   inotify 后端（文件+父目录双 watch），
 │   │   │                         inotify 不可用时降级轮询
 │   │   ├── darwin/
-│   │   │   └── darwin_platform.h Phase 3 占位（契约快照 + 移植说明）
+│   │   │   ├── darwin_platform.h 契约快照（Phase 3 状态说明）
+│   │   │   ├── darwin_sync.c     pthread 同步 + relative_np 相对期限
+│   │   │   │                     （macOS condattr 仅支持 REALTIME）
+│   │   │   └── darwin_tid.c      pthread_threadid_np 系统级线程 ID
 │   │   └── win32/
 │   │       ├── win32_platform.h  契约快照头（Phase 2 起附实现文件）
 │   │       ├── win32_sync.c      CRITICAL_SECTION + CONDITION_VARIABLE
@@ -197,9 +200,11 @@ dllexport/dllimport），不属平台层。
   Phase 2 修正 MinGW 兼容（_ReadBarrier）与 32 位目标 64 原子读写。
 - `docs/perf_report_windows.md`：✅ 五指标实测 + 与 Phase 1 同口径
   对比 + min 体积（20,428 B）。
-- `src/platform/darwin/darwin_platform.h`：Phase 3 需新增的仅
-  `darwin_tid.c`（pthread_threadid_np）与 `darwin_watcher.c`
-  （kqueue/轮询）；其余复用 `src/platform/posix/`。
+- `src/platform/darwin/`：✅ Phase 3 已交付——`darwin_sync.c`
+  （macOS condattr 仅支持 REALTIME，timedwait 改 relative_np）与
+  `darwin_tid.c`（pthread_threadid_np）；watcher 按 §16.3 选择
+  轮询回退（kqueue 为可选增强，遗留）；其余复用 posix 层。
+  适配清单与验证方式见 implementation_notes.md 的 Phase 3 章节。
 
 ## 4. CMake 选项与四预设
 
