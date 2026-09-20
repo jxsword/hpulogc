@@ -118,6 +118,7 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_C_COMPILER=clang
           -DHPULOGC_BUILD_PRESET=${{ matrix.preset }}
+          -DHPULOGC_BUILD_EXAMPLES=OFF
       - name: Build
         run: cmake --build build
       - name: Test
