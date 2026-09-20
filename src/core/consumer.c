@@ -277,6 +277,7 @@ int hpu_consumer_flush(void)
 {
     uint64_t seq;
     uint64_t deadline;
+    uint32_t timeout_ms;
 
     if (g_rt.ring == NULL) {
         return 0;
@@ -284,7 +285,15 @@ int hpu_consumer_flush(void)
     seq = hpu_at_fetch_add_u64(&g_rt.flush_req, 1, HPU_MO_ACQ_REL) + 1;
     hpu_ring_kick_consumer(g_rt.ring);
 
-    deadline = hpu_now_ns() / 1000000ULL + 5000;
+    /* The flush wait bound follows the configured shutdown timeout so a
+     * congested machine (CI runners under parallel load) cannot make a
+     * healthy pipeline look like it failed to drain. */
+    hpu_mutex_lock(&g_rt.conf_lock);
+    timeout_ms = g_rt.conf != NULL && g_rt.conf->shutdown_timeout_ms > 0
+                     ? g_rt.conf->shutdown_timeout_ms
+                     : 5000;
+    hpu_mutex_unlock(&g_rt.conf_lock);
+    deadline = hpu_now_ns() / 1000000ULL + (uint64_t)timeout_ms;
     for (;;) {
         if (hpu_ring_used(g_rt.ring) == 0 &&
             hpu_at_load_u64(&g_rt.flush_done, HPU_MO_ACQUIRE) >= seq) {

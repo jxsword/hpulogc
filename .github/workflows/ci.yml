@@ -62,7 +62,20 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
 
   # ------------------------------------------------------------------
   # macOS (Phase 3): Apple Silicon runner, Apple Clang. C99 uses the
@@ -99,7 +112,20 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
 
   macos-presets:
     if: github.event_name != 'schedule'
@@ -122,7 +148,20 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
 
   macos-asan:
     if: github.event_name != 'schedule'
@@ -140,7 +179,20 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
 
   # Dual architecture: x86_64 binaries run under Rosetta 2 on the arm64
   # runner; two representative combinations (lockfree SPSC, locked MPSC)
@@ -169,7 +221,20 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
 
   # TSan only on schedule / manual dispatch (fork tests excluded by the
   # build system under TSan; ring overwrite cases self-skip, decision 9).
@@ -189,4 +254,17 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
