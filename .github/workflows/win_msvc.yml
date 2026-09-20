@@ -1,0 +1,160 @@
+# ============================================================================
+# hpulogc CI (Windows MSVC)
+#
+# Sibling of ci.yml: validates the Windows platform layer under MSVC on
+# GitHub-hosted runners. Job parameters mirror the locally-validated
+# scripts/run_matrix.ps1 (spec 13.5 Windows matrix):
+#   - msvc-matrix:   {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
+#   - msvc-presets:  full / min / sync_thread / async_single
+#   - msvc-asan:     /fsanitize=address build + full ctest
+#
+# Every command runs through scripts/msvc_ci.bat, which discovers Visual
+# Studio via vswhere and initializes vcvars64 (each run: step is a fresh
+# shell, so the environment is re-applied per step). The Build step
+# enforces the /W4 zero-warning gate (mirrors run_matrix.ps1); the Test
+# step reports failing assertions as ::error:: annotations (same debug
+# pattern as ci.yml). Windows has no TSan, hence no scheduled job here.
+#
+# Uses actions/checkout only (no third-party actions).
+# ============================================================================
+
+name: CI (Windows MSVC)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------
+  # Functional matrix (spec 13.5): 8 combinations. The shared library is
+  # built too (default), covering the HPULOGC_BUILDING_DLL export path
+  # on every combination — mirrors run_matrix.ps1.
+  # ------------------------------------------------------------------
+  msvc-matrix:
+    name: msvc c${{ matrix.std }} ${{ matrix.lf }} ${{ matrix.conc }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { std: 99, lf: 'OFF', conc: SPSC }
+          - { std: 99, lf: 'OFF', conc: MPSC }
+          - { std: 99, lf: 'ON',  conc: SPSC }
+          - { std: 99, lf: 'ON',  conc: MPSC }
+          - { std: 11, lf: 'OFF', conc: SPSC }
+          - { std: 11, lf: 'OFF', conc: MPSC }
+          - { std: 11, lf: 'ON',  conc: SPSC }
+          - { std: 11, lf: 'ON',  conc: MPSC }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DHPULOGC_C_STANDARD=${{ matrix.std }} -DHPULOGC_LOCKFREE=${{ matrix.lf }} -DHPULOGC_CONCURRENCY=${{ matrix.conc }} -DHPULOGC_BUILD_EXAMPLES=OFF"
+          exit $LASTEXITCODE
+      - name: Build
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake --build build 2>&1" | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $warns = Select-String -Path build.log -Pattern 'warning C'
+          if ($warns) {
+            $warns | Select-Object -First 10 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+            Write-Output "::error::$($warns.Count) compiler warnings present (zero-warning gate)"
+            exit 1
+          }
+      - name: Test
+        run: |
+          cmd /c "scripts\msvc_ci.bat ctest --test-dir build --output-on-failure 2>&1" | Tee-Object -FilePath ctest.log
+          exit $LASTEXITCODE
+      - name: Failure annotations
+        if: failure()
+        run: |
+          if (Test-Path ctest.log) {
+            Write-Output "::group::ctest failure summary"
+            Select-String -Path ctest.log -Pattern '\*\*\*Failed|tests failed' | Select-Object -First 40 | ForEach-Object { $_.Line }
+            Write-Output "::endgroup::"
+            Select-String -Path ctest.log -Pattern 'FAIL \[' | Select-Object -First 20 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+          }
+
+  # ------------------------------------------------------------------
+  # Build presets (spec 5); examples excluded (min has no INI, and the
+  # custom_format example requires it — same rationale as ci.yml).
+  # ------------------------------------------------------------------
+  msvc-presets:
+    name: msvc preset ${{ matrix.preset }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [full, min, sync_thread, async_single]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DHPULOGC_BUILD_PRESET=${{ matrix.preset }} -DHPULOGC_BUILD_EXAMPLES=OFF"
+          exit $LASTEXITCODE
+      - name: Build
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake --build build 2>&1" | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $warns = Select-String -Path build.log -Pattern 'warning C'
+          if ($warns) {
+            $warns | Select-Object -First 10 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+            Write-Output "::error::$($warns.Count) compiler warnings present (zero-warning gate)"
+            exit 1
+          }
+      - name: Test
+        run: |
+          cmd /c "scripts\msvc_ci.bat ctest --test-dir build --output-on-failure 2>&1" | Tee-Object -FilePath ctest.log
+          exit $LASTEXITCODE
+      - name: Failure annotations
+        if: failure()
+        run: |
+          if (Test-Path ctest.log) {
+            Write-Output "::group::ctest failure summary"
+            Select-String -Path ctest.log -Pattern '\*\*\*Failed|tests failed' | Select-Object -First 40 | ForEach-Object { $_.Line }
+            Write-Output "::endgroup::"
+            Select-String -Path ctest.log -Pattern 'FAIL \[' | Select-Object -First 20 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+          }
+
+  # ------------------------------------------------------------------
+  # ASan (/fsanitize=address, spec 16.2 DoD): full ctest with zero
+  # reports required. Static library only (the locally-validated
+  # configuration); the ASan runtime DLL comes from the vcvars PATH,
+  # which the Test step re-applies via the wrapper.
+  # ------------------------------------------------------------------
+  msvc-asan:
+    name: msvc asan
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DHPULOGC_SANITIZER=address -DHPULOGC_BUILD_SHARED=OFF"
+          exit $LASTEXITCODE
+      - name: Build
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake --build build 2>&1" | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test
+        run: |
+          cmd /c "scripts\msvc_ci.bat ctest --test-dir build --output-on-failure 2>&1" | Tee-Object -FilePath ctest.log
+          exit $LASTEXITCODE
+      - name: Failure annotations
+        if: failure()
+        run: |
+          if (Test-Path ctest.log) {
+            Write-Output "::group::ctest failure summary"
+            Select-String -Path ctest.log -Pattern '\*\*\*Failed|tests failed|Address Sanitizer|ERROR' | Select-Object -First 40 | ForEach-Object { $_.Line }
+            Write-Output "::endgroup::"
+            Select-String -Path ctest.log -Pattern 'FAIL \[' | Select-Object -First 20 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+          }

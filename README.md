@@ -1,6 +1,7 @@
 # hpulogc — High Performance Log in C
 
 [![CI](https://github.com/jxsword/hpulogc/actions/workflows/ci.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/ci.yml)
+[![CI (Windows MSVC)](https://github.com/jxsword/hpulogc/actions/workflows/win_msvc.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/win_msvc.yml)
 
 纯 C99/C11、零第三方依赖、跨平台的高性能日志库（Linux / Windows / macOS）。
 
