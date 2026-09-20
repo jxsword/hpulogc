@@ -42,7 +42,10 @@ jobs:
   linux-smoke:
     if: github.event_name != 'schedule'
     name: linux ${{ matrix.cc }} c${{ matrix.std }}
-    runs-on: ubuntu-latest
+    # Pinned (not -latest): ubuntu-latest flips to Ubuntu 26 on
+    # 2026-10-19 with unvetted compiler versions; runner upgrades are
+    # deliberate changes here.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +55,7 @@ jobs:
           - { cc: clang, std: 99 }
           - { cc: clang, std: 11 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
@@ -99,7 +102,7 @@ jobs:
           - { std: 11, lf: 'ON',  conc: SPSC }
           - { std: 11, lf: 'ON',  conc: MPSC }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare toolchain
         run: command -v ninja || brew install ninja
       - name: Configure
@@ -136,7 +139,7 @@ jobs:
       matrix:
         preset: [full, min, sync_thread, async_single]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare toolchain
         run: command -v ninja || brew install ninja
       - name: Configure
@@ -168,7 +171,7 @@ jobs:
     name: macos asan
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare toolchain
         run: command -v ninja || brew install ninja
       - name: Configure
@@ -208,7 +211,7 @@ jobs:
           - { tag: lockfree-SPSC, lf: 'ON',  conc: SPSC }
           - { tag: locked-MPSC,   lf: 'OFF', conc: MPSC }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare toolchain
         run: command -v ninja || brew install ninja
       - name: Configure
@@ -243,7 +246,7 @@ jobs:
     name: macos tsan (nightly)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare toolchain
         run: command -v ninja || brew install ninja
       - name: Configure
