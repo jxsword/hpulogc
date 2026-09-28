@@ -34,6 +34,7 @@ if(HPULOGC_BUILD_PRESET STREQUAL "min")
     hpulogc_force_option(HPULOGC_CONCURRENCY STRING SPSC)
     hpulogc_force_option(HPULOGC_LOCKFREE BOOL OFF)
     hpulogc_force_option(HPULOGC_MIN_SIZE_OPT BOOL ON)
+    hpulogc_force_option(HPULOGC_SINKS STRING "console,rollingfile")
 elseif(HPULOGC_BUILD_PRESET STREQUAL "sync_thread")
     hpulogc_force_option(HPULOGC_ENABLE_ASYNC BOOL OFF)
     hpulogc_force_option(HPULOGC_LOCKFREE BOOL OFF)
@@ -66,6 +67,9 @@ option(HPULOGC_ENABLE_CATEGORY    "Category routing + per-category levels" ON)
 option(HPULOGC_ENABLE_THROTTLE    "Rate limiting and sampling" OFF)
 option(HPULOGC_ENABLE_SOURCE_LOC  "Capture __FILE__/__LINE__" ON)
 option(HPULOGC_LOCKFREE           "Lock-free ring buffer (else locked)" OFF)
+set(HPULOGC_SINKS "console,rollingfile,syslog,null" CACHE STRING
+    "Built-in sink whitelist: console,rollingfile always on; syslog/null\
+can be trimmed (rd_v0.6 §4.7.4); syslog is POSIX-only")
 set(HPULOGC_CONCURRENCY "MPSC" CACHE STRING
     "Concurrency mode: SPSC | MPSC | MPMC")
 set(HPULOGC_COMPILE_TIME_LEVEL "TRACE" CACHE STRING
@@ -270,11 +274,25 @@ if(HPU_PLATFORM STREQUAL "windows")
     # Keep the Win32 umbrella header from polluting library TUs.
     list(APPEND HPULOGC_PRIVATE_DEFINES WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
-# Built-in sink whitelist (rd_v0.6 §4.7.4): syslog is POSIX-only and is
-# excluded automatically on Windows. The HPULOGC_SINKS user option lands
-# with the trim work; the default registers console+rollingfile+null(+syslog).
-list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_NULL=1)
-if(NOT WIN32)
+# Built-in sink whitelist (rd_v0.6 §4.7.4): console/rollingfile are not
+# trimmable; syslog and null come and go with HPULOGC_SINKS. syslog is
+# POSIX-only and is excluded automatically on Windows.
+string(REPLACE "," ";" HPULOGC_SINKS_LIST "${HPULOGC_SINKS}")
+foreach(sink IN LISTS HPULOGC_SINKS_LIST)
+    string(TOUPPER "${sink}" sink_uc)
+    if(NOT sink_uc MATCHES "^(CONSOLE|ROLLINGFILE|SYSLOG|NULL)$")
+        message(FATAL_ERROR
+            "HPULOGC_SINKS: unknown sink type '${sink}' (allowed: "
+            "console, rollingfile, syslog, null)")
+    endif()
+    if(sink_uc STREQUAL "NULL")
+        list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_NULL=1)
+    endif()
+    if(sink_uc STREQUAL "SYSLOG")
+        set(HPULOGC_SINK_SYSLOG_WANTED 1)
+    endif()
+endforeach()
+if(NOT WIN32 AND HPULOGC_SINK_SYSLOG_WANTED)
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_SYSLOG=1)
 endif()
 if(HPULOGC_CONCURRENCY_UC STREQUAL "SPSC")
