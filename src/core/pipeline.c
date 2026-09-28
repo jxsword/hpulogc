@@ -469,7 +469,7 @@ void hpu_pipeline_submit_ex(hpulogc_level_t level, const char* category,
     uint16_t wire_cnt = 0;
     unsigned long long fields_dropped = 0;
 
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         errno = saved_errno;
         return; /* uninitialized/after shutdown: silent drop (spec 7.5) */
     }

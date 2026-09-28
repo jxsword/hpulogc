@@ -79,7 +79,9 @@ typedef struct hpu_registry {
  * its own symbol (decision 12).
  */
 typedef struct hpu_runtime {
-    int              state;            /*!< hpu_runtime_state_t value */
+    hpu_atomic_u32   state;            /*!< hpu_runtime_state_t value (defect
+                                            P-1: read lock-free by producer/
+                                            consumer/watcher threads) */
     hpu_mutex_t      conf_lock;        /*!< Serializes conf readers/writer */
     hpu_conf_t*      conf;             /*!< Active snapshot (guarded) */
     hpu_atomic_u32   conf_gen;         /*!< Bumped on every snapshot swap */
@@ -134,6 +136,28 @@ enum hpu_runtime_state {
 
 /** @brief Global runtime instance (core.c). */
 extern hpu_runtime_t g_rt;
+
+/**
+ * @brief Load the runtime state atomically (defect P-1).
+ *
+ * The state flag is polled lock-free by producer, consumer and watcher
+ * threads; plain accesses race with the init/shutdown writes.
+ */
+static inline int hpu_rt_state_load(void)
+{
+    return (int)hpu_at_load_u32(&g_rt.state, HPU_MO_ACQUIRE);
+}
+
+/**
+ * @brief Store the runtime state atomically (defect P-1).
+ *
+ * Release ordering publishes the state transition together with every
+ * runtime field set before it.
+ */
+static inline void hpu_rt_state_store(int s)
+{
+    hpu_at_store_u32(&g_rt.state, (uint32_t)s, HPU_MO_RELEASE);
+}
 
 /** @brief Global registry instance (registry.c). */
 extern hpu_registry_t g_reg;
@@ -332,6 +356,13 @@ int hpu_hotreload_start(void);
  * @brief Stop the watcher thread.
  */
 void hpu_hotreload_stop(void);
+
+/**
+ * @brief Query whether a reload cycle is in flight (defect P-2).
+ * @return Non-zero while a reload holds the serialization slot; shutdown
+ *         waits for it to clear before freeing the conf snapshot.
+ */
+int hpu_hotreload_busy(void);
 
 /**
  * @brief Run one reload cycle (parse new config; swap on success, keep
