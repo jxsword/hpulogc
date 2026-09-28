@@ -104,6 +104,8 @@ foreach(backend ${HPU_ATOMIC_TEST_BACKENDS})
 endforeach()
 
 
+hpu_add_test_binary(test_sink_registry SRCS unit/test_sink_registry.c)
+hpu_add_test_binary(test_fields SRCS unit/test_fields.c)
 hpu_add_test_binary(test_ini SRCS unit/test_ini.c)
 hpu_add_test_binary(test_format SRCS unit/test_format.c)
 hpu_add_test_binary(test_rotate SRCS unit/test_rotate.c)
@@ -115,6 +117,10 @@ if(NOT WIN32 AND NOT HPULOGC_SANITIZER MATCHES "thread"
     # cannot model fork()+threads either; needs the INI path.
     hpu_add_test_binary(test_fork SRCS integration/test_fork.c)
 endif()
+if(HPULOGC_ENABLE_INI)
+    hpu_add_test_binary(test_sinks SRCS integration/test_sinks.c)
+endif()
+hpu_add_test_binary(test_sink_async SRCS integration/test_sink_async.c)
 hpu_add_test_binary(test_signal_safe SRCS integration/test_signal_safe.c)
 hpu_add_test_binary(test_diskfail SRCS integration/test_diskfail.c)
 
