@@ -82,6 +82,7 @@ static int placeholder_type(char c)
     case 'n': return HPU_FA_NEWLINE;
     case 'c': return HPU_FA_CATEGORY;
     case 'm': return HPU_FA_MSG;
+    case 'v': return HPU_FA_FIELDS;
     default: return -1;
     }
 }
@@ -144,6 +145,72 @@ static int push_action(hpu_format_t* fmt, uint8_t type, uint32_t lit_off,
     fmt->actions[fmt->action_count].lit_len = lit_len;
     fmt->action_count++;
     return 0;
+}
+
+/**
+ * @brief Splice a HPU_FA_FIELDS action before the final closing brace of a
+ *        json template (§4.11.5).
+ *
+ * Finds the LAST literal action containing '}' (the template's closing
+ * brace for the builtin json shape) and splits it into
+ * [literal prefix][FIELDS][literal suffix starting at the brace]. The
+ * FIELDS action emits nothing for field-less records (output stays
+ * byte-identical) and `,"fields":{...}` otherwise, so the member lands
+ * inside the object right before its closing brace.
+ *
+ * @return 0 on success (or no brace found), -1 on allocation failure.
+ */
+static int json_splice_fields_action(hpu_format_t* fmt)
+{
+    size_t i;
+
+    for (i = fmt->action_count; i-- > 0; ) {
+        hpu_fmt_action_t* a = &fmt->actions[i];
+        size_t k;
+
+        if (a->type != HPU_FA_LITERAL || a->lit_len == 0) {
+            continue;
+        }
+        for (k = a->lit_len; k-- > 0; ) {
+            char tmp[HPULOGC_MAX_FMT_LEN];
+            size_t suffix_len;
+            size_t suffix_off;
+            hpu_fmt_action_t* grown;
+
+            if (fmt->pool[a->lit_off + k] != '}') {
+                continue;
+            }
+            suffix_len = a->lit_len - k; /* suffix INCLUDES the brace */
+            if (suffix_len > sizeof(tmp)) {
+                return -1; /* template shape not supported for injection */
+            }
+            memcpy(tmp, fmt->pool + a->lit_off + k, suffix_len);
+            if (pool_append(&fmt->pool, &fmt->pool_len, &fmt->pool_cap,
+                            tmp, suffix_len) != 0) {
+                return -1;
+            }
+            suffix_off = fmt->pool_len - suffix_len;
+            grown = realloc(fmt->actions, (fmt->action_count + 2) *
+                                               sizeof(*fmt->actions));
+            if (grown == NULL) {
+                return -1;
+            }
+            fmt->actions = grown;
+            memmove(&fmt->actions[i + 3], &fmt->actions[i + 1],
+                    (fmt->action_count - i - 1) * sizeof(*fmt->actions));
+            fmt->actions[i].lit_len = (uint32_t)k; /* prefix stays in place */
+            fmt->actions[i + 1].type = (uint8_t)HPU_FA_FIELDS;
+            fmt->actions[i + 1].lit_off = 0;
+            fmt->actions[i + 1].lit_len = 0;
+            fmt->actions[i + 2].type = (uint8_t)HPU_FA_LITERAL;
+            fmt->actions[i + 2].lit_off = (uint32_t)suffix_off;
+            fmt->actions[i + 2].lit_len = (uint32_t)suffix_len;
+            fmt->action_count += 2;
+            return 0;
+        }
+        /* literal without '}': keep scanning earlier actions */
+    }
+    return 0; /* no closing brace: no injection point */
 }
 
 int hpu_format_compile(hpu_format_t* fmt, const char* name,
@@ -214,6 +281,9 @@ int hpu_format_compile(hpu_format_t* fmt, const char* name,
                                (uint32_t)((size_t)(p - lit_start))) != 0) {
             rc = HPULOGC_ERR_NO_MEM;
         }
+    }
+    if (rc == 0 && fmt->is_json && json_splice_fields_action(fmt) != 0) {
+        rc = HPULOGC_ERR_NO_MEM;
     }
     if (rc != 0) {
         hpu_format_free(fmt);
@@ -549,6 +619,255 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
     }
 }
 
+/* ---- Structured fields (§4.11) ------------------------------------ */
+
+/**
+ * @brief Render one wire field into the line buffer (json or text style).
+ */
+static void fields_render_one(render_buf_t* b, const char* key,
+                              size_t key_len, int type, const void* val,
+                              size_t val_len, int is_json,
+                              int escape_injection, int first)
+{
+    char tmp[40];
+
+    if (is_json) {
+        if (!first) {
+            rb_append_str(b, ",");
+        }
+        rb_append_str(b, "\"");
+        rb_append_escaped_json(b, key, key_len);
+        rb_append_str(b, "\":");
+    } else {
+        if (!first) {
+            rb_append_str(b, " ");
+        }
+        if (escape_injection) {
+            rb_append_escaped_injection(b, key, key_len);
+        } else {
+            rb_append(b, key, key_len);
+        }
+        rb_append_str(b, "=");
+    }
+
+    switch (type) {
+    case HPULOGC_FIELD_I64: {
+        int64_t v;
+
+        memcpy(&v, val, sizeof(v));
+        snprintf(tmp, sizeof(tmp), "%lld", (long long)v);
+        rb_append_str(b, tmp);
+        break;
+    }
+    case HPULOGC_FIELD_U64: {
+        uint64_t v;
+
+        memcpy(&v, val, sizeof(v));
+        snprintf(tmp, sizeof(tmp), "%llu", (unsigned long long)v);
+        rb_append_str(b, tmp);
+        break;
+    }
+    case HPULOGC_FIELD_F64: {
+        double v;
+
+        memcpy(&v, val, sizeof(v));
+        snprintf(tmp, sizeof(tmp), "%.17g", v);
+        rb_append_str(b, tmp);
+        break;
+    }
+    case HPULOGC_FIELD_BOOL: {
+        int v = *(const int*)val != 0;
+
+        if (is_json) {
+            rb_append_str(b, v ? "true" : "false");
+        } else {
+            rb_append_str(b, v ? "true" : "false");
+        }
+        break;
+    }
+    case HPULOGC_FIELD_STR:
+        if (is_json) {
+            rb_append_str(b, "\"");
+            rb_append_escaped_json(b, (const char*)val, val_len);
+            rb_append_str(b, "\"");
+        } else if (escape_injection) {
+            rb_append_escaped_injection(b, (const char*)val, val_len);
+        } else {
+            rb_append(b, (const char*)val, val_len);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/**
+ * @brief Render the whole field region (%v / json "fields" member).
+ *
+ * json emits `,"fields":{...}` (leading comma, empty when no fields);
+ * text emits `k1=v1 k2=v2` (nothing when no fields).
+ */
+static void fields_render(render_buf_t* b, const hpu_log_record_t* rec,
+                          int is_json, int escape_injection)
+{
+    size_t off = 0;
+    uint16_t i;
+    int first = 1;
+
+    if (is_json) {
+        rb_append_str(b, ",\"fields\":{");
+    }
+    for (i = 0; i < rec->field_count && rec->fields_wire != NULL; i++) {
+        uint16_t key_len;
+        uint16_t val_len;
+        uint8_t type;
+
+        if (off + 6 > rec->fields_len) {
+            break; /* corrupt region: stop (defensive) */
+        }
+        memcpy(&key_len, rec->fields_wire + off, 2);
+        type = rec->fields_wire[off + 2];
+        memcpy(&val_len, rec->fields_wire + off + 4, 2);
+        off += 6;
+        if (off + (size_t)key_len + val_len > rec->fields_len) {
+            break;
+        }
+        fields_render_one(b, (const char*)rec->fields_wire + off, key_len,
+                          type, rec->fields_wire + off + key_len, val_len,
+                          is_json, escape_injection, first);
+        first = 0;
+        off += (size_t)key_len + val_len;
+    }
+    if (is_json) {
+        rb_append_str(b, "}");
+    }
+}
+
+int hpu_fields_serialize(const hpulogc_field_t* fields, size_t n,
+                         size_t budget, uint8_t* out, size_t cap,
+                         size_t* out_len, uint16_t* out_cnt,
+                         unsigned long long* dropped)
+{
+    size_t len = 0;
+    uint16_t cnt = 0;
+    unsigned long long drop = 0;
+    size_t i;
+    int budget_hit = 0;
+
+    if (out == NULL || cap == 0 || out_len == NULL || out_cnt == NULL) {
+        return HPULOGC_ERR_INVALID_ARG;
+    }
+    for (i = 0; fields != NULL && i < n; i++) {
+        const char* key = fields[i].key;
+        size_t key_len = key != NULL ? strlen(key) : 0;
+        size_t val_len = 0;
+        const void* val = NULL;
+        uint8_t type = 0;
+        size_t need;
+
+        if (cnt >= HPULOGC_MAX_FIELDS || budget_hit) {
+            drop++; /* count budget exhausted / tail beyond budget */
+            continue;
+        }
+        if (key == NULL) {
+            drop++;
+            continue;
+        }
+        if (key_len > HPULOGC_MAX_FIELD_KEY_LEN) {
+            drop++;
+            continue;
+        }
+        switch (fields[i].value.type) {
+        case HPULOGC_FIELD_I64:
+            type = HPULOGC_FIELD_I64;
+            val = &fields[i].value.v.i64;
+            val_len = 8;
+            break;
+        case HPULOGC_FIELD_U64:
+            type = HPULOGC_FIELD_U64;
+            val = &fields[i].value.v.u64;
+            val_len = 8;
+            break;
+        case HPULOGC_FIELD_F64:
+            type = HPULOGC_FIELD_F64;
+            val = &fields[i].value.v.f64;
+            val_len = 8;
+            break;
+        case HPULOGC_FIELD_BOOL:
+            type = HPULOGC_FIELD_BOOL;
+            val = &fields[i].value.v.b;
+            val_len = 1;
+            break;
+        case HPULOGC_FIELD_STR:
+            type = HPULOGC_FIELD_STR;
+            val = fields[i].value.v.str.s;
+            val_len = fields[i].value.v.str.len;
+            if (val == NULL) {
+                val_len = 0;
+            } else if (val_len > HPULOGC_MAX_FIELD_STR_LEN) {
+                val_len = HPULOGC_MAX_FIELD_STR_LEN; /* truncate */
+                drop++;
+            }
+            break;
+        default:
+            drop++; /* invalid type tag */
+            continue;
+        }
+        need = 6 + key_len + val_len;
+        if (len + need > budget || len + need > cap) {
+            budget_hit = 1; /* this and all remaining fields are dropped */
+            drop++;
+            continue;
+        }
+        memcpy(out + len, &key_len, 2);
+        out[len + 2] = type;
+        out[len + 3] = 0;
+        memcpy(out + len + 4, &val_len, 2);
+        memcpy(out + len + 6, key, key_len);
+        memcpy(out + len + 6 + key_len, val, val_len);
+        len += need;
+        cnt++;
+    }
+    while (len % 8 != 0 && len < cap) {
+        out[len++] = 0; /* pad the region to the record alignment */
+    }
+    *out_len = len;
+    *out_cnt = cnt;
+    if (dropped != NULL) {
+        *dropped = drop;
+    }
+    return 0;
+}
+
+void hpu_fields_iterate(const uint8_t* wire, size_t len, uint16_t count,
+                        hpu_fields_iter_cb cb, void* ud)
+{
+    size_t off = 0;
+    uint16_t i;
+
+    if (wire == NULL || len == 0 || cb == NULL) {
+        return;
+    }
+    for (i = 0; i < count && off + 6 <= len; i++) {
+        uint16_t key_len;
+        uint16_t val_len;
+        uint8_t type;
+
+        memcpy(&key_len, wire + off, 2);
+        type = wire[off + 2];
+        memcpy(&val_len, wire + off + 4, 2);
+        off += 6;
+        if (off + (size_t)key_len + val_len > len) {
+            return; /* corrupt region: stop (defensive) */
+        }
+        if (cb(ud, (const char*)wire + off, key_len, type,
+               wire + off + key_len, val_len) != 0) {
+            return;
+        }
+        off += (size_t)key_len + val_len;
+    }
+}
+
 int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
                       const hpu_fmt_env_t* env, hpu_fmt_cache_t* cache,
                       int escape_injection, size_t max_line,
@@ -644,6 +963,11 @@ int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
                 }
             }
             /* NULL/empty category expands to the empty string (spec 4.9) */
+            break;
+        case HPU_FA_FIELDS:
+            if (rec->field_count > 0 && rec->fields_wire != NULL) {
+                fields_render(&b, rec, fmt->is_json, escape_injection);
+            }
             break;
         case HPU_FA_NEWLINE:
             rb_append(&b, nl, nl_len);

@@ -57,7 +57,7 @@ typedef struct hpu_lf_head {
     uint16_t       category_len;
     uint16_t       file_len;
     uint16_t       func_len;
-    uint16_t       reserved;
+    uint16_t       field_count; /*!< Structured field count (§4.11.4) */
 } hpu_lf_head_t;
 
 /** @brief Compile-time layout checks against hpu_ring_meta_t. */
@@ -160,7 +160,7 @@ static void lf_write_record(hpu_ring_t* r, size_t pos,
         h->category_len = 0;
         h->file_len    = 0;
         h->func_len    = 0;
-        h->reserved    = 0;
+        h->field_count = 0;
         h->total_len   = total;
     } else {
         h->tid          = msg->tid;
@@ -173,7 +173,7 @@ static void lf_write_record(hpu_ring_t* r, size_t pos,
         h->category_len = (uint16_t)msg->category_len;
         h->file_len     = (uint16_t)msg->file_len;
         h->func_len     = (uint16_t)msg->func_len;
-        h->reserved     = 0;
+        h->field_count = msg->field_count;
         h->total_len    = total;
 
         if (msg->category_len > 0) {
@@ -190,6 +190,10 @@ static void lf_write_record(hpu_ring_t* r, size_t pos,
         }
         if (msg->msg_len > 0) {
             memcpy(p, msg->msg, msg->msg_len);
+            p += msg->msg_len;
+        }
+        if (msg->fields_len > 0) {
+            memcpy(p, msg->fields_wire, msg->fields_len);
         }
     }
 
@@ -363,6 +367,12 @@ static void lf_view_from_staging(hpu_ring_view_t* out, void* staging)
     out->func = sm->func_len > 0 ? p : NULL;
     p += sm->func_len;
     out->msg = p;
+    p += sm->msg_len;
+    out->fields_wire = sm->field_count > 0 ? (uint8_t*)(void*)p : NULL;
+    out->fields_len = sm->field_count > 0
+                          ? (size_t)(sm->total_len -
+                                     (uint32_t)((char*)p - (char*)staging))
+                          : 0;
 }
 
 /**
@@ -385,12 +395,21 @@ static void lf_view_from_ring(hpu_ring_view_t* out, hpu_lf_head_t* h)
     out->meta.category_len = h->category_len;
     out->meta.file_len    = h->file_len;
     out->meta.func_len    = h->func_len;
-    out->meta.reserved    = h->reserved;
+    out->meta.field_count = h->field_count;
 
     out->category = h->category_len > 0 ? base : NULL;
     out->file     = base + h->category_len;
     out->func     = out->file + h->file_len;
     out->msg      = out->func + h->func_len;
+    {
+        char* f = out->msg + h->msg_len;
+
+        out->fields_wire = h->field_count > 0 ? (uint8_t*)(void*)f : NULL;
+        out->fields_len = h->field_count > 0
+                              ? (size_t)(h->total_len -
+                                         (uint32_t)(f - (char*)h))
+                              : 0;
+    }
 }
 
 hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int mode)

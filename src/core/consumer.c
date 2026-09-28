@@ -163,6 +163,9 @@ static void consumer_view_to_rec(const hpu_ring_view_t* view,
     rec->realtime_ns = m->realtime_ns;
     rec->mono_us = m->mono_us;
     rec->tid = m->tid;
+    rec->fields_wire = view->fields_wire;
+    rec->fields_len = (uint32_t)view->fields_len;
+    rec->field_count = m->field_count;
 }
 
 /**

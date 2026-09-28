@@ -82,6 +82,40 @@ extern "C" {
 #define HPULOGC_MAX_OUTPUTS 16
 #endif
 
+/** @brief Maximum number of sinks (instances; @p HPULOGC_MAX_OUTPUTS is kept
+ *         as an alias of this value). */
+#ifndef HPULOGC_MAX_SINKS
+#define HPULOGC_MAX_SINKS HPULOGC_MAX_OUTPUTS
+#endif
+
+#ifndef HPULOGC_MAX_SINK_TYPES
+/** @brief Maximum number of registered sink TYPES (built-in + custom). */
+#define HPULOGC_MAX_SINK_TYPES 32
+#endif
+
+#ifndef HPULOGC_MAX_FIELDS
+/** @brief Maximum number of structured fields per event (§4.11.2). */
+#define HPULOGC_MAX_FIELDS 16
+#endif
+
+#ifndef HPULOGC_MAX_FIELD_STR_LEN
+/** @brief Maximum byte length of a structured-field STRING value (longer
+ *         values are truncated and counted in fields_dropped). */
+#define HPULOGC_MAX_FIELD_STR_LEN 256
+#endif
+
+#ifndef HPULOGC_MAX_FIELD_KEY_LEN
+/** @brief Maximum byte length of a structured-field key (longer keys make
+ *         the whole field dropped and counted in fields_dropped). */
+#define HPULOGC_MAX_FIELD_KEY_LEN 64
+#endif
+
+#ifndef HPULOGC_SINK_ABI_VERSION
+/** @brief Sink ops-table ABI version (§4.10.1). Custom sinks must fill this
+ *         into hpulogc_sink_ops_t::abi_version at registration time. */
+#define HPULOGC_SINK_ABI_VERSION 1
+#endif
+
 #ifndef HPULOGC_MAX_RULES
 /** @brief Maximum number of routing rules (code config array limit; config file uses the same). */
 #define HPULOGC_MAX_RULES 64
@@ -205,6 +239,11 @@ typedef enum {
 /**
  * @brief Output target descriptor (code-internal configuration).
  *
+ * @deprecated Since rd_v0.6 the flat descriptor is a compatibility shim:
+ * the library internally maps it onto console/rollingfile sinks. It keeps
+ * working with unchanged semantics; new code should prefer
+ * hpulogc_sink_decl_t (equal expressive power for every sink type).
+ *
  * Populate an array of these and reference the entries by name from rules.
  * The library copies all required metadata during init; strings must stay
  * valid until hpulogc_init() returns.
@@ -241,6 +280,222 @@ typedef struct {
     size_t         output_count;      /*!< Number of entries in outputs */
 } hpulogc_rule_t;
 
+/* ---- Structured fields and events (rd_v0.6 §4.11) ---- */
+
+/**
+ * @brief Structured field value type tag (§4.11.1).
+ */
+typedef enum {
+    HPULOGC_FIELD_I64  = 0, /*!< int64_t */
+    HPULOGC_FIELD_U64  = 1, /*!< uint64_t */
+    HPULOGC_FIELD_F64  = 2, /*!< double */
+    HPULOGC_FIELD_BOOL = 3, /*!< int (0/1) */
+    HPULOGC_FIELD_STR  = 4  /*!< Byte string (NOT NUL-terminated; carried with length) */
+} hpulogc_field_type_t;
+
+/**
+ * @brief Typed field value (tagged union, §4.11.1).
+ */
+typedef struct hpulogc_field_value {
+    hpulogc_field_type_t type;   /*!< Value type tag */
+    union {
+        int64_t  i64;            /*!< HPULOGC_FIELD_I64 */
+        uint64_t u64;            /*!< HPULOGC_FIELD_U64 */
+        double   f64;            /*!< HPULOGC_FIELD_F64 */
+        int      b;              /*!< HPULOGC_FIELD_BOOL (0/1) */
+        struct {
+            const char* s;       /*!< String bytes (no NUL) */
+            size_t      len;     /*!< String byte count */
+        } str;                   /*!< HPULOGC_FIELD_STR */
+    } v;                         /*!< Typed payload */
+} hpulogc_field_value_t;
+
+/**
+ * @brief One structured field: key + typed value (§4.11.1).
+ *
+ * Keys and string values are borrowed from the caller and must stay valid
+ * until the hpulogc_log_ex/hpulogc_vlog_ex call returns. Budget rules
+ * (count / key length / string length / per-record byte budget) are in
+ * §4.11.2; violations drop or truncate the field and count in the global
+ * fields_dropped statistic.
+ */
+typedef struct hpulogc_field {
+    const char*           key;    /*!< Field name bytes */
+    hpulogc_field_value_t value;  /*!< Typed value */
+} hpulogc_field_t;
+
+struct hpulogc_sink;
+typedef struct hpulogc_sink hpulogc_sink_t;
+
+/**
+ * @brief Log event handed to sink callbacks (§4.11.1).
+ *
+ * All pointers are BORROWED views valid only for the duration of the
+ * callback; retaining anything across the callback requires a deep copy.
+ * @p line/@p line_len is the full rendered line for the matched routing
+ * rule (what text sinks append); @p fields/@p field_count is the structured
+ * payload (what machine-facing sinks consume).
+ */
+typedef struct hpulogc_event {
+    int         level;             /*!< Severity (hpulogc_level_t) */
+    const char* category;          /*!< Category bytes (may be NULL) */
+    size_t      category_len;      /*!< Category byte count */
+    const char* file;              /*!< Source file bytes (may be NULL) */
+    size_t      file_len;          /*!< Source file byte count */
+    const char* func;              /*!< Function bytes (may be NULL) */
+    size_t      func_len;          /*!< Function byte count */
+    int         src_line;          /*!< Source line (0 when absent) */
+    const char* msg;               /*!< Rendered message body bytes */
+    size_t      msg_len;           /*!< Message body byte count */
+    uint64_t    tid;               /*!< Producer thread id */
+    int64_t     realtime_ns;       /*!< Realtime capture timestamp */
+    int64_t     mono_us;           /*!< Monotonic capture timestamp */
+    const char* line;              /*!< Rendered full line bytes (incl. newline) */
+    size_t      line_len;          /*!< Rendered full line byte count */
+    const hpulogc_field_t* fields; /*!< Structured fields view (may be NULL) */
+    size_t      field_count;       /*!< Number of fields after budget trimming */
+} hpulogc_event_t;
+
+/* ---- Sink contract (rd_v0.6 §4.10) ---- */
+
+/** @brief Sink usable in the synchronous pipeline (no ring). */
+#define HPULOGC_CAP_SYNC 1u
+/** @brief Sink usable in the async pipeline (ring + consumer threads). */
+#define HPULOGC_CAP_ASYNC 2u
+/** @brief Sink guarantees each record lands contiguous/never torn mid-line. */
+#define HPULOGC_CAP_LINE_ATOMIC 4u
+/** @brief Sink supports fsync semantics (fsync key + global crash_safety). */
+#define HPULOGC_CAP_FSYNC 8u
+
+/**
+ * @brief Sink operation statistics (atomically readable from any thread).
+ */
+typedef struct {
+    unsigned long long written;        /*!< Records successfully delivered to this sink */
+    unsigned long long dropped;        /*!< Records dropped before delivery (async queue full) */
+    unsigned long long failed;         /*!< Write failures (incl. after retry/reopen) */
+    unsigned long long fields_dropped; /*!< Reserved (field trimming is global; §4.10.3) */
+    unsigned long long bytes_written;  /*!< Cumulative bytes counted per delivered event line */
+} hpulogc_sink_stats_t;
+
+/**
+ * @brief Sink ops table (vtable, §4.10.1).
+ *
+ * **ABI contract (normative)**: field order is frozen within
+ * #HPULOGC_SINK_ABI_VERSION major versions; new callbacks may only be added
+ * by consuming @p reserved slots (appending before them). Fill
+ * #HPULOGC_SINK_ABI_VERSION into @p abi_version. @p type must be unique
+ * within the process registry and no longer than HPULOGC_MAX_NAME_LEN.
+ *
+ * **Lifecycle (normative)**:
+ * @code
+ *   create -> configure* -> init -> start -> emit / emit_batch* -> flush -> destroy
+ * @endcode
+ *
+ * @warning `init` runs AFTER all `configure` calls, so it may only fill
+ *          defaults with `if (p->field == 0) p->field = default;` — an
+ *          unconditional assignment would wipe configured values.
+ *
+ * @warning Callbacks must not call library APIs other than the
+ *          `hpulogc_sink_*` family (no re-entry), and must not allocate
+ *          memory in steady state (§9). The core guarantees that callbacks
+ *          of ONE sink instance are serialized (at most one thread inside).
+ */
+typedef struct hpulogc_sink_ops {
+    const char* type;        /*!< Config type name, e.g. "rollingfile" */
+    uint32_t    abi_version; /*!< Must be HPULOGC_SINK_ABI_VERSION */
+    uint32_t    caps;        /*!< HPULOGC_CAP_* combination */
+    size_t      priv_size;   /*!< Private data size; core allocates zeroed at create (0 = none) */
+
+    /**
+     * @brief Feed one private config key; may be NULL (no private keys).
+     *
+     * Common keys (enabled / async / queue size) are consumed by the core
+     * before this callback. Return non-zero for unrecognized/invalid keys;
+     * the core warns and fails or ignores per `strict init`.
+     * @return 0 on success; non-zero for an invalid/unknown key.
+     */
+    int  (*configure )(struct hpulogc_sink* sink, const char* key, const char* val);
+
+    /**
+     * @brief Default fill + resource precheck; may be NULL.
+     *
+     * Called once after all `configure` calls, before the first `emit`.
+     * @return 0 on success; non-zero fails the instance (and init/reload).
+     */
+    int  (*init      )(struct hpulogc_sink* sink);
+
+    /**
+     * @brief Open real resources (file/connection); may be NULL.
+     *
+     * @return 0 on success; non-zero is an I/O failure (init fails with
+     *         HPULOGC_ERR_IO, fail-fast).
+     */
+    int  (*start     )(struct hpulogc_sink* sink);
+
+    /**
+     * @brief Synchronous path: deliver one event; may be NULL when
+     *        `emit_batch` is implemented (at least one of both is REQUIRED).
+     *
+     * Executed on the caller's delivery thread. Must not report failure;
+     * failures are exposed through the per-sink `failed` statistic via the
+     * internal accounting entry point.
+     */
+    void (*emit      )(struct hpulogc_sink* sink, const hpulogc_event_t* ev);
+
+    /**
+     * @brief Async path: deliver a batch; may be NULL (core then loops
+     *        `emit` instead).
+     *
+     * @return Number of successfully delivered events (0 <= n <= input n);
+     *         negative means the whole batch failed. The core books n into
+     *         `written` and the remainder into `failed` (§4.10.3).
+     */
+    int  (*emit_batch)(struct hpulogc_sink* sink, const hpulogc_event_t* const* evs, size_t n);
+
+    /**
+     * @brief Flush buffered bytes; may be NULL (no buffering semantics).
+     *
+     * Must NOT fsync (that is the `sync` callback's job).
+     * @return 0 on success; non-zero when data remains or the write failed.
+     */
+    int  (*flush     )(struct hpulogc_sink* sink);
+
+    /**
+     * @brief flush + fsync for sinks declaring HPULOGC_CAP_FSYNC; may be
+     *        NULL (no fsync semantics — the core then only flushes).
+     */
+    int  (*sync      )(struct hpulogc_sink* sink);
+
+    /**
+     * @brief Release private resources; may be NULL.
+     *
+     * The core guarantees idempotent invocation and releases the instance
+     * body afterwards; the sink must not touch @p sink after returning.
+     */
+    void (*destroy   )(struct hpulogc_sink* sink);
+
+    void (*reserved[4])(void); /*!< ABI extension slots; must all be NULL */
+} hpulogc_sink_ops_t;
+
+/* ---- Sink generic declaration (code config; isomorphic to [outputs]
+ *      inline definitions, §4.7/§4.10.5; appended in rd_v0.6) ---- */
+
+/**
+ * @brief Generic sink instance declaration for code config (§4.10.5).
+ *
+ * Key/value arrays are borrowed and copied by the library during init.
+ * Common keys (enabled / async / queue size) are consumed by the core;
+ * everything else goes to the type's `configure` callback.
+ */
+typedef struct {
+    const char*        name;   /*!< Instance name (referenced by routing rules) */
+    const char*        type;   /*!< Type name (built-in or registered) */
+    const char* const* keys;   /*!< Private key array */
+    const char* const* vals;   /*!< Value array, same length as keys */
+    size_t             count;  /*!< Number of key/value pairs */
+} hpulogc_sink_decl_t;
+
 /**
  * @brief Code-internal configuration.
  *
@@ -275,6 +530,9 @@ typedef struct {
     int                  signal_safe;         /*!< Enable hpulogc_log_signal_safe output, default 0 */
     /* Appended in rd_v0.3 (append-only ABI rule): consumer count */
     uint32_t             consumer_threads;    /*!< Consumer threads, default 1; values > 1 require the MPMC concurrency build (init-only: hot reload ignores changes) */
+    /* Appended in rd_v0.6 (append-only ABI rule): generic sink declarations */
+    const hpulogc_sink_decl_t* sinks;         /*!< Generic sink instance declarations (may coexist with @p outputs; names must be unique across both) */
+    size_t                     sink_count;    /*!< Number of entries in sinks */
 } hpulogc_config_t;
 
 /**
@@ -439,6 +697,7 @@ typedef struct {
     unsigned long long written;     /*!< Records written out (counted per record, not per output) */
     size_t             buffer_used; /*!< Ring buffer bytes currently occupied */
     size_t             buffer_size; /*!< Ring buffer total size in bytes */
+    unsigned long long fields_dropped; /*!< Structured fields dropped/truncated by the budgets (§4.11.2; appended at the end in rd_v0.6, append-only ABI) */
 } hpulogc_stats_t;
 
 /**
@@ -488,6 +747,73 @@ HPULOGC_API void hpulogc_log(hpulogc_level_t level, const char* category,
 HPULOGC_API void hpulogc_vlog(hpulogc_level_t level, const char* category,
                               const char* file, int line, const char* func,
                               const char* fmt, va_list ap);
+
+/**
+ * @brief Write one log record with structured fields (§4.11.3).
+ *
+ * Semantics match hpulogc_log(); in addition, @p fields is validated and
+ * trimmed against the field budgets (count / key length / string length /
+ * per-record byte budget, §4.11.2) before entering the pipeline — trimmed
+ * or truncated fields are counted in the global fields_dropped statistic.
+ * The signal-safe channel does not carry fields.
+ *
+ * @param fields       Caller-held field array; borrowed only for the
+ *                     duration of the call (may be NULL when @p
+ *                     field_count is 0).
+ * @param field_count  Number of entries in @p fields.
+ * @see hpulogc_log() for the remaining parameters.
+ */
+HPULOGC_API void hpulogc_log_ex(hpulogc_level_t level, const char* category,
+                                const char* file, int line, const char* func,
+                                const hpulogc_field_t* fields, size_t field_count,
+                                const char* fmt, ...) HPULOGC_PRINTF(8, 9);
+
+/**
+ * @brief va_list variant of hpulogc_log_ex().
+ */
+HPULOGC_API void hpulogc_vlog_ex(hpulogc_level_t level, const char* category,
+                                 const char* file, int line, const char* func,
+                                 const hpulogc_field_t* fields, size_t field_count,
+                                 const char* fmt, va_list ap);
+
+/* ---- Multi-sink contract APIs (§4.10) ---- */
+
+/**
+ * @brief Register a custom sink type (§4.10.5).
+ *
+ * Must be called single-threaded BEFORE hpulogc_init*() (after init the
+ * call returns HPULOGC_ERR_STATE). The ops table is borrowed and must stay
+ * valid for the process lifetime (static storage recommended). Validation
+ * failures (NULL fields, abi_version mismatch, both emit and emit_batch
+ * NULL, non-NULL reserved slots) return HPULOGC_ERR_INVALID_ARG;
+ * duplicate type names and table overflow return HPULOGC_ERR_CONFIG.
+ *
+ * @param ops  Sink ops table (static storage recommended).
+ * @return     HPULOGC_OK or a negative error code.
+ */
+HPULOGC_API int hpulogc_sink_register(const hpulogc_sink_ops_t* ops);
+
+/**
+ * @brief Read one sink instance's statistics (§4.10.3).
+ *
+ * @param name   Sink instance name (as declared in [outputs] / sinks).
+ * @param stats  Output snapshot; NULL returns HPULOGC_ERR_INVALID_ARG.
+ * @return       HPULOGC_OK, HPULOGC_ERR_INVALID_ARG (unknown name / NULL
+ *               stats) or HPULOGC_ERR_STATE (uninitialized).
+ */
+HPULOGC_API int hpulogc_get_sink_stats(const char* name,
+                                       hpulogc_sink_stats_t* stats);
+
+/**
+ * @brief Access a sink instance's private data (for sink implementations).
+ *
+ * Only valid inside sink callbacks (§4.10.4); the private block is the
+ * zeroed storage of @p priv_size bytes allocated by the core at create.
+ *
+ * @param sink  Sink handle passed to the callback.
+ * @return      Private data pointer (never NULL when priv_size > 0).
+ */
+void* hpulogc_sink_priv(hpulogc_sink_t* sink);
 
 /**
  * @brief Async-signal-safe restricted log write.
@@ -580,6 +906,54 @@ HPULOGC_API void hpulogc_log_signal_safe(hpulogc_level_t level, const char* msg)
 #define HPULOGC_FATAL(cat, ...) HPULOGC__LOG(HPULOGC_LEVEL_FATAL, cat, __VA_ARGS__)
 #else
 #define HPULOGC_FATAL(cat, ...) ((void)0)
+#endif
+
+/** @cond INTERNAL */
+#define HPULOGC__LOG_EX(lvl, cat, flds, n, ...)                    \
+    hpulogc_log_ex(lvl, cat, __FILE__, __LINE__, __func__,         \
+                   (flds), (n), HPULOGC_VA_ARGS(__VA_ARGS__))
+/** @endcond */
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 0 /* TRACE */
+/** @brief Log at TRACE with structured fields @p flds (count @p n). */
+#define HPULOGC_TRACE_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_TRACE, cat, flds, n, __VA_ARGS__)
+#else
+#define HPULOGC_TRACE_EX(cat, flds, n, ...) ((void)0)
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 1 /* DEBUG */
+/** @brief Log at DEBUG with structured fields @p flds (count @p n). */
+#define HPULOGC_DEBUG_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_DEBUG, cat, flds, n, __VA_ARGS__)
+#else
+#define HPULOGC_DEBUG_EX(cat, flds, n, ...) ((void)0)
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 2 /* INFO */
+/** @brief Log at INFO with structured fields @p flds (count @p n). */
+#define HPULOGC_INFO_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_INFO, cat, flds, n, __VA_ARGS__)
+#else
+#define HPULOGC_INFO_EX(cat, flds, n, ...) ((void)0)
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 3 /* WARN */
+/** @brief Log at WARN with structured fields @p flds (count @p n). */
+#define HPULOGC_WARN_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_WARN, cat, flds, n, __VA_ARGS__)
+#else
+#define HPULOGC_WARN_EX(cat, flds, n, ...) ((void)0)
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 4 /* ERROR */
+/** @brief Log at ERROR with structured fields @p flds (count @p n). */
+#define HPULOGC_ERROR_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_ERROR, cat, flds, n, __VA_ARGS__)
+#else
+#define HPULOGC_ERROR_EX(cat, flds, n, ...) ((void)0)
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 5 /* FATAL */
+/** @brief Log at FATAL with structured fields @p flds (count @p n). */
+#define HPULOGC_FATAL_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_FATAL, cat, flds, n, __VA_ARGS__)
+#else
+#define HPULOGC_FATAL_EX(cat, flds, n, ...) ((void)0)
 #endif
 
 /** @} */

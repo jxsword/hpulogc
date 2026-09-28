@@ -952,6 +952,8 @@ int hpulogc_get_stats(hpulogc_stats_t* stats)
     stats->dropped = ring_dropped + lost;
     stats->overwritten = ring_overwritten;
     stats->throttled = hpu_at_load_u64(&g_rt.st_throttled, HPU_MO_ACQUIRE);
+    stats->fields_dropped =
+        hpu_at_load_u64(&g_rt.st_fields_dropped, HPU_MO_ACQUIRE);
     stats->written = written_counter - lost;
     if (g_rt.ring != NULL) {
         stats->buffer_used = hpu_ring_used(g_rt.ring);

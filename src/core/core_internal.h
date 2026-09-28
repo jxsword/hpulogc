@@ -119,6 +119,7 @@ typedef struct hpu_runtime {
     hpu_atomic_u64   st_written;       /*!< Records dispatched to outputs */
     hpu_atomic_u64   st_throttled;     /*!< Throttle/sampling drops */
     hpu_atomic_u64   st_retired_lost;  /*!< Lost lines of closed outputs */
+    hpu_atomic_u64   st_fields_dropped; /*!< Structured fields dropped/truncated (§4.11.2) */
     /* Periodic stats report bookkeeping (async builds) */
     int64_t          stats_last_ns;    /*!< Last stats report timestamp */
 } hpu_runtime_t;
@@ -251,6 +252,17 @@ int hpu_registry_set_override(const char* category, hpulogc_level_t level);
 void hpu_pipeline_submit(hpulogc_level_t level, const char* category,
                          const char* file, int line, const char* func,
                          const char* fmt, va_list ap);
+
+/**
+ * @brief Producer entry with structured fields (§4.11.3).
+ *
+ * Field budgets are enforced here (§4.11.2); violations update the global
+ * fields_dropped statistic. @p fields may be NULL when @p field_count == 0.
+ */
+void hpu_pipeline_submit_ex(hpulogc_level_t level, const char* category,
+                            const char* file, int line, const char* func,
+                            const hpulogc_field_t* fields, size_t field_count,
+                            const char* fmt, va_list ap);
 
 /**
  * @brief Create the TLS key for the per-thread render buffers (init).
