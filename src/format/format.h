@@ -30,7 +30,9 @@ typedef enum {
     HPU_FA_FUNC,         /*!< %func */
     HPU_FA_MSG,          /*!< %msg (injection / JSON escaping applies) */
     HPU_FA_CATEGORY,     /*!< %category (JSON escaping applies) */
-    HPU_FA_NEWLINE       /*!< %n */
+    HPU_FA_NEWLINE,      /*!< %n */
+    HPU_FA_FIELDS        /*!< %v - structured fields (empty when none); json
+                              *   formats splice in a typed "fields" member */
 } hpu_fmt_action_type_t;
 
 /**
@@ -102,6 +104,11 @@ typedef struct hpu_log_record {
     int64_t     realtime_ns;   /*!< Realtime capture timestamp */
     int64_t     mono_us;       /*!< Monotonic capture timestamp */
     uint64_t    tid;           /*!< Producer thread id */
+    /* Structured fields in wire format (§4.11.4); pointers stay valid for
+     * the whole processing of this record (TLS buffer / ring staging). */
+    const uint8_t* fields_wire;  /*!< Wire-encoded field region (may be NULL) */
+    uint32_t       fields_len;   /*!< Wire region byte count (8-aligned) */
+    uint16_t       field_count;  /*!< Number of encoded fields */
 } hpu_log_record_t;
 
 /**
@@ -164,5 +171,78 @@ int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
  */
 extern const char* const hpu_builtin_format_names[5];
 extern const char* const hpu_builtin_format_templates[5];
+
+/* ---- Structured-field wire format (§4.11.4) ---- */
+
+/**
+ * @brief Serialize structured fields into the wire format.
+ *
+ * Wire encoding per field: {u16 key_len; u8 type; u8 pad; u16 val_len;
+ * u8 val[val_len]} (host byte order, scalars via memcpy); the whole region
+ * is padded to 8 bytes. Budget rules (§4.11.2): fields beyond
+ * HPULOGC_MAX_FIELDS, keys longer than HPULOGC_MAX_FIELD_KEY_LEN and the
+ * tail beyond @p budget bytes are dropped (each counts +1 into
+ * @p dropped); STRING values longer than HPULOGC_MAX_FIELD_STR_LEN are
+ * truncated (+1).
+ *
+ * @param fields   Caller-held field array (may be NULL when n == 0).
+ * @param n        Number of input fields.
+ * @param budget   Maximum serialized region size in bytes (max_log_length).
+ * @param out      Output buffer (wire region).
+ * @param cap      Capacity of @p out.
+ * @param out_len  Filled with the padded wire length.
+ * @param out_cnt  Filled with the number of encoded fields.
+ * @param dropped  Accumulates dropped/truncated field count (may be NULL).
+ * @return         0 on success, HPULOGC_ERR_NO_MEM when @p cap is too
+ *                 small for the first field (caller sizes it with the
+ *                 max_record_size formula).
+ */
+int hpu_fields_serialize(const hpulogc_field_t* fields, size_t n,
+                         size_t budget, uint8_t* out, size_t cap,
+                         size_t* out_len, uint16_t* out_cnt,
+                         unsigned long long* dropped);
+
+/**
+ * @brief Wire-format field visitor (§4.11.4).
+ *
+ * @param ud       Opaque user data.
+ * @param key      Field key bytes (not NUL-terminated).
+ * @param key_len  Key byte count.
+ * @param type     hpulogc_field_type_t value.
+ * @param val      Value bytes: scalars in host order (8/8/8/1 bytes),
+ *                 STR raw bytes.
+ * @param val_len  Value byte count.
+ * @return         0 to continue iteration, non-zero to stop.
+ */
+typedef int (*hpu_fields_iter_cb)(void* ud, const char* key, size_t key_len,
+                                  int type, const void* val, size_t val_len);
+
+/**
+ * @brief Iterate the fields of a wire region.
+ *
+ * @param wire   Wire region (may be NULL when len == 0).
+ * @param len    Region byte count (8-aligned padded length).
+ * @param count  Field count from the record header.
+ * @param cb     Visitor called once per field.
+ * @param ud     Opaque user data for @p cb.
+ */
+void hpu_fields_iterate(const uint8_t* wire, size_t len, uint16_t count,
+                        hpu_fields_iter_cb cb, void* ud);
+
+/**
+ * @brief Decode a wire region into a caller-held field array.
+ *
+ * The decoded STRING values point into @p wire (borrowed view; valid as
+ * long as the wire region is valid).
+ *
+ * @param wire   Wire region (may be NULL when count == 0).
+ * @param len    Region byte count.
+ * @param count  Field count.
+ * @param out    Output array (capacity >= count recommended).
+ * @param max    Output capacity.
+ * @return       Decoded field count (truncated to @p max).
+ */
+size_t hpu_fields_unpack(const uint8_t* wire, size_t len, uint16_t count,
+                         hpulogc_field_t* out, size_t max);
 
 #endif /* HPU_FORMAT_H */

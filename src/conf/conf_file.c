@@ -457,6 +457,8 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
     if (n < 1) {
         return parse_fail(ps, line_no, "output type missing");
     }
+    o->enabled = 1;
+    o->async = 0;
     {
         char* type = trim(parts[0]);
 
@@ -464,11 +466,17 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
             o->pub.type = HPULOGC_OUT_CONSOLE;
         } else if (eqcase(type, "file")) {
             o->pub.type = HPULOGC_OUT_FILE;
-        } else if (eqcase(type, "socket")) {
-            return parse_fail(ps, line_no,
-                              "socket outputs are not supported (fail-fast)");
+        } else if (eqcase(type, "syslog") || eqcase(type, "null") ||
+                   hpu_sink_registry_find(type) != NULL) {
+            /* Generic shape: registered built-in (syslog/null) or custom
+             * registered type; the remaining keys are stored for the type's
+             * configure callback (rd_v0.6 §4.7.1/§4.10.5). Unregistered
+             * custom types fail fast here (§10.4). */
+            o->is_generic = 1;
+            snprintf(o->type_name, sizeof(o->type_name), "%s", type);
         } else {
-            return parse_fail(ps, line_no, "unknown output type");
+            return parse_fail(ps, line_no,
+                              "unknown or unregistered sink type");
         }
     }
 
@@ -485,6 +493,73 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
         k = trim(kv);
         v = trim(eq + 1);
         strip_quotes(v);
+
+        /* Common keys (rd_v0.6 §4.7.3): consumed by the core for every
+         * shape; unknown-key handling does not apply to them. */
+        if (strcmp(k, "enabled") == 0) {
+            if (parse_bool(v, &o->enabled) != 0) {
+                return parse_fail(ps, line_no, "invalid boolean");
+            }
+            continue;
+        } else if (strcmp(k, "async") == 0) {
+            int as;
+
+            if (eqcase(v, "on")) {
+                as = 1;
+            } else if (eqcase(v, "off")) {
+                as = 0;
+            } else {
+                return parse_fail(ps, line_no,
+                                  "async must be on or off");
+            }
+            o->async = as;
+            continue;
+        } else if (strcmp(k, "queue size") == 0) {
+            unsigned long long sz;
+
+            if (parse_size(v, &sz) != 0) {
+                return parse_fail(ps, line_no, "invalid size");
+            }
+            if (sz < 64U * 1024U) {
+                fprintf(stderr,
+                        "hpulogc: %s:%d: queue size below 64KB, clamped\n",
+                        ps->path ? ps->path : "?", line_no);
+                sz = 64U * 1024U;
+            }
+            if (sz > 16U * 1024U * 1024U) {
+                fprintf(stderr,
+                        "hpulogc: %s:%d: queue size above 16MB, clamped\n",
+                        ps->path ? ps->path : "?", line_no);
+                sz = 16U * 1024U * 1024U;
+            }
+            o->queue_size = (size_t)sz;
+            continue;
+        }
+
+        if (o->is_generic) {
+            /* Generic shape: store the key/value pair for the type's
+             * configure callback; unknown keys follow strict handling
+             * only inside the type's configure (the core reports them). */
+            size_t klen = strlen(k);
+            size_t vlen = strlen(v);
+
+            if (o->kv_count >= HPU_CONF_MAX_SINK_KV) {
+                return parse_fail(ps, line_no,
+                                  "too many sink parameters (32 max)");
+            }
+            if (o->kv_pool_len + klen + vlen + 2 >
+                sizeof(o->kv_pool)) {
+                return parse_fail(ps, line_no, "sink parameters too long");
+            }
+            memcpy(o->kv_pool + o->kv_pool_len, k, klen + 1);
+            o->kv_key_off[o->kv_count] = o->kv_pool_len;
+            o->kv_pool_len += klen + 1;
+            memcpy(o->kv_pool + o->kv_pool_len, v, vlen + 1);
+            o->kv_val_off[o->kv_count] = o->kv_pool_len;
+            o->kv_pool_len += vlen + 1;
+            o->kv_count++;
+            continue;
+        }
 
         if (strcmp(k, "stream") == 0) {
             if (eqcase(v, "stdout")) {
@@ -570,14 +645,16 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
         }
     }
 
-    if (o->pub.type == HPULOGC_OUT_FILE && o->pub.path == NULL) {
-        return parse_fail(ps, line_no, "file output requires 'path'");
-    }
-    /* default rotate naming (spec 4.6) */
-    if (o->pub.rotate_naming == NULL) {
-        snprintf(o->naming_buf, sizeof(o->naming_buf), "%s",
-                 HPU_ROTATE_DEFAULT_NAMING);
-        o->pub.rotate_naming = o->naming_buf;
+    if (!o->is_generic) {
+        if (o->pub.type == HPULOGC_OUT_FILE && o->pub.path == NULL) {
+            return parse_fail(ps, line_no, "file output requires 'path'");
+        }
+        /* default rotate naming (spec 4.6) */
+        if (o->pub.rotate_naming == NULL) {
+            snprintf(o->naming_buf, sizeof(o->naming_buf), "%s",
+                     HPU_ROTATE_DEFAULT_NAMING);
+            o->pub.rotate_naming = o->naming_buf;
+        }
     }
     return 0;
 }
@@ -1208,7 +1285,12 @@ int hpu_conf_load_file(hpu_conf_t* c, const char* path, int strict)
             } else {
                 c->outputs[i].pub.path = NULL;
             }
-            c->outputs[i].pub.rotate_naming = c->outputs[i].naming_buf;
+            if (c->outputs[i].is_generic) {
+                /* generic sinks carry no rotate naming (rd_v0.6 §4.7) */
+                c->outputs[i].pub.rotate_naming = NULL;
+            } else {
+                c->outputs[i].pub.rotate_naming = c->outputs[i].naming_buf;
+            }
         }
     }
     if (rc != 0) {

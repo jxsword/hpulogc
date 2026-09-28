@@ -63,7 +63,7 @@ static void fill_meta(hpu_ring_meta_t* meta, const hpu_ring_msg_t* msg,
     meta->category_len = (uint16_t)msg->category_len;
     meta->file_len     = (uint16_t)msg->file_len;
     meta->func_len     = (uint16_t)msg->func_len;
-    meta->reserved     = 0;
+    meta->field_count  = msg->field_count;
 }
 
 /**
@@ -72,7 +72,7 @@ static void fill_meta(hpu_ring_meta_t* meta, const hpu_ring_msg_t* msg,
 static uint32_t record_len(const hpu_ring_msg_t* msg)
 {
     size_t n = sizeof(hpu_ring_meta_t) + msg->category_len + msg->file_len +
-               msg->func_len + msg->msg_len;
+               msg->func_len + msg->msg_len + msg->fields_len;
     return (uint32_t)align8(n);
 }
 
@@ -108,6 +108,10 @@ static uint32_t write_record(hpu_ring_t* r, size_t pos,
     }
     if (msg->msg_len > 0) {
         memcpy(p, msg->msg, msg->msg_len);
+        p += msg->msg_len;
+    }
+    if (msg->fields_len > 0) {
+        memcpy(p, msg->fields_wire, msg->fields_len);
     }
     return total;
 }
@@ -161,6 +165,14 @@ static uint32_t read_record(const hpu_ring_t* r, size_t pos,
         out->func = NULL;
     }
     out->msg = p;
+    p += meta->msg_len;
+    out->fields_wire = meta->field_count > 0
+                           ? (const uint8_t*)(const void*)p
+                           : NULL;
+    out->fields_len = meta->field_count > 0
+                          ? (size_t)(meta->total_len -
+                                     (uint32_t)(p - base))
+                          : 0;
     return meta->total_len;
 }
 
@@ -333,6 +345,15 @@ int hpu_ring_get(hpu_ring_t* r, hpu_ring_view_t* out, void* staging,
                 out->func = sm->func_len > 0 ? p : NULL;
                 p += sm->func_len;
                 out->msg = p;
+                p += sm->msg_len;
+                out->fields_wire = sm->field_count > 0
+                                       ? (uint8_t*)(void*)p
+                                       : NULL;
+                out->fields_len = sm->field_count > 0
+                                      ? (size_t)(sm->total_len -
+                                                 (uint32_t)((char*)p -
+                                                            (char*)staging))
+                                      : 0;
             } else {
                 *out = view; /* no staging: view into ring (caller beware) */
             }

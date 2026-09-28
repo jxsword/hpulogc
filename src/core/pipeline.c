@@ -68,6 +68,8 @@ typedef struct hpu_render_tls {
     size_t           msg_cap;  /*!< Message buffer capacity */
     char*            line_buf; /*!< Full-line render buffer */
     size_t           line_cap; /*!< Line buffer capacity */
+    char*            wire_buf; /*!< Structured-field wire buffer (§4.11.4) */
+    size_t           wire_cap; /*!< Wire buffer capacity */
     hpu_fmt_cache_t  cache;    /*!< Per-thread time rendering cache */
 } hpu_render_tls_t;
 
@@ -84,6 +86,7 @@ static void render_tls_dtor(void* value)
     if (t != NULL) {
         free(t->msg_buf);
         free(t->line_buf);
+        free(t->wire_buf);
         free(t);
     }
 }
@@ -365,14 +368,42 @@ int hpu_pipeline_process(const hpu_log_record_t* rec)
         return -1;
     }
 
-    for (k = 0; k < out_count; k++) {
-        size_t i = (size_t)out_idx[k];
+    /* Build the delivery event (§4.11.1): the rendered line plus the
+     * structured-field view decoded from the record's wire region. */
+    {
+        hpulogc_event_t ev;
+        hpulogc_field_t ev_fields[HPULOGC_MAX_FIELDS];
 
-        if (i < conf->output_count && conf->outputs[i].handle != NULL) {
-            if (hpu_output_write_line(conf->outputs[i].handle, line,
-                                      line_len,
-                                      rec->realtime_ns / 1000000000LL,
-                                      rec->level) == 0) {
+        memset(&ev, 0, sizeof(ev));
+        ev.level = rec->level;
+        ev.category = rec->category;
+        ev.category_len = rec->category_len;
+        ev.file = rec->file;
+        ev.file_len = rec->file_len;
+        ev.func = rec->func;
+        ev.func_len = rec->func_len;
+        ev.src_line = rec->line;
+        ev.msg = rec->msg;
+        ev.msg_len = rec->msg_len;
+        ev.tid = rec->tid;
+        ev.realtime_ns = rec->realtime_ns;
+        ev.mono_us = rec->mono_us;
+        ev.line = line;
+        ev.line_len = line_len;
+        ev.field_count =
+            hpu_fields_unpack(rec->fields_wire, rec->fields_len,
+                              rec->field_count, ev_fields,
+                              sizeof(ev_fields) / sizeof(ev_fields[0]));
+        ev.fields = ev.field_count > 0 ? ev_fields : NULL;
+        ev.fields_wire = rec->fields_wire;
+        ev.fields_len = rec->fields_len;
+
+        for (k = 0; k < out_count; k++) {
+            size_t i = (size_t)out_idx[k];
+
+            if (i < conf->output_count &&
+                conf->outputs[i].handle != NULL) {
+                hpu_output_deliver(conf->outputs[i].handle, &ev);
                 written = 1;
             }
         }
@@ -400,6 +431,15 @@ void hpu_pipeline_submit(hpulogc_level_t level, const char* category,
                          const char* file, int line, const char* func,
                          const char* fmt, va_list ap)
 {
+    hpu_pipeline_submit_ex(level, category, file, line, func, NULL, 0,
+                           fmt, ap);
+}
+
+void hpu_pipeline_submit_ex(hpulogc_level_t level, const char* category,
+                            const char* file, int line, const char* func,
+                            const hpulogc_field_t* fields, size_t field_count,
+                            const char* fmt, va_list ap)
+{
     int saved_errno = errno;
     const char* cat = category; /* raw: NULL/"" renders as empty */
     size_t cat_len = cat != NULL ? strlen(cat) : 0;
@@ -424,6 +464,10 @@ void hpu_pipeline_submit(hpulogc_level_t level, const char* category,
     hpu_ring_msg_t ring_msg;
 #endif
     hpu_log_record_t rec;
+    uint8_t* wire = NULL;
+    size_t wire_len = 0;
+    uint16_t wire_cnt = 0;
+    unsigned long long fields_dropped = 0;
 
     if (g_rt.state != HPU_RT_RUNNING) {
         errno = saved_errno;
@@ -488,6 +532,25 @@ void hpu_pipeline_submit(hpulogc_level_t level, const char* category,
     }
     msg_len = (size_t)n > max_len ? max_len : (size_t)n; /* silent trim */
 
+    /* Step 4b: structured-field budget check + wire serialization (§4.11.2). */
+    if (field_count > 0 && fields != NULL) {
+        size_t wire_need =
+            HPULOGC_MAX_FIELDS *
+            (6 + HPULOGC_MAX_FIELD_KEY_LEN + HPULOGC_MAX_FIELD_STR_LEN);
+        size_t budget = max_len; /* field region budget: max_log_length */
+
+        wire = (uint8_t*)tls_ensure(&tls->wire_buf, &tls->wire_cap,
+                                    wire_need);
+        if (wire != NULL &&
+            hpu_fields_serialize(fields, field_count, budget, wire,
+                                 wire_need, &wire_len, &wire_cnt,
+                                 &fields_dropped) == 0 &&
+            fields_dropped > 0) {
+            hpu_at_fetch_add_u64(&g_rt.st_fields_dropped, fields_dropped,
+                                 HPU_MO_RELAXED);
+        }
+    }
+
     tid = hpu_thread_id();
     realtime_ns = hpu_realtime_ns();
     if ((int)hpu_at_load_u32(&g_rt.ts_source, HPU_MO_RELAXED) ==
@@ -520,6 +583,9 @@ void hpu_pipeline_submit(hpulogc_level_t level, const char* category,
         ring_msg.mono_us = mono_us;
         ring_msg.msg = msg;
         ring_msg.msg_len = (uint32_t)msg_len;
+        ring_msg.fields_wire = wire;
+        ring_msg.fields_len = (uint32_t)wire_len;
+        ring_msg.field_count = wire_cnt;
 
         rc = hpu_ring_put(g_rt.ring, &ring_msg);
         if (rc != HPU_RING_OK) {
@@ -547,6 +613,9 @@ void hpu_pipeline_submit(hpulogc_level_t level, const char* category,
     rec.realtime_ns = realtime_ns;
     rec.mono_us = mono_us;
     rec.tid = tid;
+    rec.fields_wire = wire;
+    rec.fields_len = (uint32_t)wire_len;
+    rec.field_count = wire_cnt;
 
     hpu_mutex_lock(&g_rt.conf_lock);
     (void)hpu_pipeline_process(&rec);

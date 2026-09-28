@@ -192,8 +192,9 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 
 ## 文档
 
-- 需求规格：`docs/rd_v0.2.md`（规范性）
-- MPMC 增量规格（Phase 4）：`docs/rd_v0.3.md`
+- 需求规格（规范性，唯一现行版）：`docs/rd_v0.6.md`（合并 v0.2 全文、
+  v0.3 MPMC 增量与多 sink 体系；历史版本 rd_v0.2/rd_v0.3 保留作快照）
+- 用户决策记录：`docs/decision_log.md`
 - 代码结构与平台契约：`docs/code_structure.md`
 - 实现决策记录：`docs/implementation_notes.md`（含 Phase 2 Windows、
   Phase 4 MPMC 章节）

@@ -538,5 +538,37 @@ exitcode=66）。该失败在 main 上即存在；MPMC 组合加入 TSan 矩阵�
 变其状态。MPMC 自身新增路径（ring 租约认领、多消费者 core/flush/
 shutdown）经上述 C 节验证为 TSan 干净。
 
+| P-4 | `src/ring/ringbuf_lockfree.c` MPMC 过期游标重同步读（**部分已修**） | 消费者游标过期（deq 已前进且环回绕）时，lf_wait_commit 的 commit 读取与生产者对同一物理位置的重写构成 TSan 可见竞争；若负载字节伪造 commit 匹配，租约 CAS 会以垃圾 total_len 推进 deq（真实正确性风险，非仅良性） | **修复（本阶段）**：lf_wait_commit 将 deq==d 新鲜度检查前置到 commit 读取之前；MPMC 认领 CAS 前再次校验 deq==d。deq==d 时生产者不可能写该物理槽位（空间检查 pos+len ≤ deq+cap 对同槽位重写恒假），且 deq 跳过 d 必须先取得 d 的租约（互斥），故「新鲜度检查 + 认领 CAS」对重用窗口封闭。修复后 correctness 封闭；残余的**良性重同步读**（检查与读取之间的极端 TOCTOU 窗口，值必被门禁丢弃）TSan 仍无法建模——`ring_stress_mpmc_discard_pressure` 在 TSan 下自跳过（同决策 4/9 先例），其余 MPMC 用例 TSan 零竞争 |
+
 另：首轮 PR CI 的 macOS 两组合失败（`fork_disable_child_drops`）即为
 上表 P-3 暴露，修复后复跑通过（详见 §E）。
+
+
+---
+
+# Phase 5（多 Sink 体系，规范依据 docs/rd_v0.6.md §4.7/§4.10/§4.11）
+
+## A. 验证结果索引（本地 Linux）
+
+| 项 | 结果 |
+|----|------|
+| `scripts/run_matrix.sh quick`（24 组合：{gcc,clang}×{99,11}×{有锁,无锁}×{SPSC,MPSC,MPMC}） | 24/24 全绿 |
+| 默认构建完整 ctest（22 项，含 4 个新 sink 测试二进制） | 22/22 全绿 |
+| MPMC 构建完整 ctest（23 项，含 test_mpmc + test_sink_async MPMC 用例） | 23/23 全绿 |
+| ASan+UBSan（含 test_fields 长键越界、test_sinks kv 悬垂捕获） | 22/22 全绿 |
+| TSan（lockfree MPMC） | 仅 test_pipeline 预存竞争（§D P-1/P-2）；ring 过期游标真实漏洞（P-4）已修复；MPMC 压测良性重同步读按决策 9 先例自跳过 |
+
+## B. 新增缺陷登记（Phase 5 开发中 ASan/TSan/clang 捕获，均已修复）
+
+| # | 缺陷 | 捕获者 | 修复 |
+|---|------|--------|------|
+| D-1 | BOOL 字段解包仅拷 1 字节进 4 字节 int，高位垃圾（非确定值） | clang 矩阵（gcc 静默） | unpack 拷贝前清零联合体 |
+| D-2 | outputs 数组 realloc 后 kv 池指针悬垂 → strlen 越界读 | ASan heap-use-after-free | kv 改偏移量存储（realloc 安全） |
+| D-3 | test_fields longkey 未 NUL 结尾（测试 bug） | ASan stack-buffer-overflow | 测试数据补 NUL |
+| P-4 | MPMC 过期游标认领 CAS 可落入重写后的槽位（负载伪造 commit 时真实腐蚀） | TSan | deq 新鲜度门禁（检查+CAS 对重用窗口封闭） |
+
+## C. 遗留与说明
+
+- `hpulogc_build_info_t` 未新增 sinks 字段（无规范性要求，避免 ABI 扰动；
+  如需可按 append-only 规则追加）。
+- `hpu_output_write_direct`（v0.2 死代码）已随 vtable 化删除。

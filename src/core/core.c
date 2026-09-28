@@ -15,6 +15,7 @@
  */
 
 #include "core_internal.h"
+#include "../output/sink_queue.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -454,6 +455,7 @@ int hpu_core_start(hpu_conf_t* c)
                      HPU_MO_RELAXED);
 
     if (hpu_pipeline_tls_init() != 0) {
+        fprintf(stderr, "[DBG] core_start: tls_init failed\n");
         goto fail;
     }
     /* fork(2) child handler (no-op on platforms without fork). */
@@ -462,9 +464,11 @@ int hpu_core_start(hpu_conf_t* c)
 #if HPULOGC_ENABLE_ASYNC
     g_rt.ring = hpu_ring_create(c->buffer_size, policy, ring_mode);
     if (g_rt.ring == NULL) {
+        fprintf(stderr, "[DBG] core_start: ring create failed\n");
         goto fail;
     }
     if (hpu_consumer_start() != 0) {
+        fprintf(stderr, "[DBG] core_start: consumer_start failed\n");
         hpu_ring_destroy(g_rt.ring);
         g_rt.ring = NULL;
         goto fail;
@@ -516,6 +520,7 @@ int hpu_core_start(hpu_conf_t* c)
         hpu_signal_safe_enable();
     }
 
+    hpu_sink_registry_freeze(); /* no sink registration after init */
     g_rt.state = HPU_RT_RUNNING;
     return 0;
 
@@ -665,10 +670,13 @@ int hpulogc_init_from_file(const char* config_path)
     hpu_conf_t* c;
     int rc;
 
+    fprintf(stderr, "[DBG] init_from_file enter state=%d path=%s\n",
+            g_rt.state, config_path);
     if (config_path == NULL) {
         return HPULOGC_ERR_INVALID_ARG;
     }
     if (g_rt.state == HPU_RT_RUNNING || g_rt.state == HPU_RT_INITIALIZING) {
+        fprintf(stderr, "[DBG] init_from_file: STATE leak\n");
         return HPULOGC_ERR_STATE;
     }
     rt_zero();
@@ -757,6 +765,7 @@ void hpulogc_shutdown(void)
 
 void hpu_core_stop(void)
 {
+    hpu_sink_registry_unfreeze(); /* re-init may register new types */
     hpu_signal_safe_disable();
 
 #if HPULOGC_ENABLE_HOT_RELOAD
@@ -795,13 +804,50 @@ void hpu_core_stop(void)
 /* Flush / sync                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief Wait for every async sink queue to drain (bounded, best effort).
+ *
+ * Called after the ring-side flush handshake so `hpulogc_flush()` covers
+ * the whole two-tier pipeline (§4.10.6).
+ */
+static void core_flush_sink_queues(uint32_t timeout_ms)
+{
+    size_t i;
+
+    hpu_mutex_lock(&g_rt.conf_lock);
+    for (i = 0; g_rt.conf != NULL && i < g_rt.conf->output_count; i++) {
+        hpu_output_t* o = g_rt.conf->outputs[i].handle;
+
+        if (o != NULL) {
+            hpu_output_base_t* b = hpu_sink_base((hpulogc_sink_t*)(void*)o);
+
+            if (b->queue != NULL) {
+                hpu_sink_queue_flush_wait((hpu_sink_queue_t*)b->queue,
+                                          timeout_ms);
+            }
+        }
+    }
+    hpu_mutex_unlock(&g_rt.conf_lock);
+}
+
 int hpulogc_flush(void)
 {
     if (g_rt.state != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
 #if HPULOGC_ENABLE_ASYNC
-    return hpu_consumer_flush() == 0 ? HPULOGC_OK : HPULOGC_ERR_IO;
+    {
+        int rc = hpu_consumer_flush();
+        uint32_t timeout_ms = 5000;
+
+        hpu_mutex_lock(&g_rt.conf_lock);
+        timeout_ms = g_rt.conf != NULL && g_rt.conf->shutdown_timeout_ms > 0
+                         ? g_rt.conf->shutdown_timeout_ms
+                         : 5000;
+        hpu_mutex_unlock(&g_rt.conf_lock);
+        core_flush_sink_queues(timeout_ms);
+        return rc == 0 ? HPULOGC_OK : HPULOGC_ERR_IO;
+    }
 #else
     {
         /* Sync builds: flush is best effort (spec 7.3 "尽量写出"). Write
@@ -834,6 +880,16 @@ int hpulogc_sync(void)
 #if HPULOGC_ENABLE_ASYNC
     if (hpu_consumer_flush() != 0) {
         rc = -1;
+    }
+    {
+        uint32_t timeout_ms = 5000;
+
+        hpu_mutex_lock(&g_rt.conf_lock);
+        timeout_ms = g_rt.conf != NULL && g_rt.conf->shutdown_timeout_ms > 0
+                         ? g_rt.conf->shutdown_timeout_ms
+                         : 5000;
+        hpu_mutex_unlock(&g_rt.conf_lock);
+        core_flush_sink_queues(timeout_ms);
     }
 #endif
     hpu_mutex_lock(&g_rt.conf_lock);
@@ -918,6 +974,29 @@ void hpulogc_get_build_info(hpulogc_build_info_t* info)
 #endif
 }
 
+int hpulogc_get_sink_stats(const char* name, hpulogc_sink_stats_t* stats)
+{
+    size_t i;
+
+    if (stats == NULL || name == NULL) {
+        return HPULOGC_ERR_INVALID_ARG;
+    }
+    if (g_rt.state != HPU_RT_RUNNING) {
+        return HPULOGC_ERR_STATE;
+    }
+    hpu_mutex_lock(&g_rt.conf_lock);
+    for (i = 0; g_rt.conf != NULL && i < g_rt.conf->output_count; i++) {
+        if (strcmp(g_rt.conf->outputs[i].name_buf, name) == 0 &&
+            g_rt.conf->outputs[i].handle != NULL) {
+            hpu_output_get_stats(g_rt.conf->outputs[i].handle, stats);
+            hpu_mutex_unlock(&g_rt.conf_lock);
+            return HPULOGC_OK;
+        }
+    }
+    hpu_mutex_unlock(&g_rt.conf_lock);
+    return HPULOGC_ERR_INVALID_ARG; /* unknown sink instance name */
+}
+
 int hpulogc_get_stats(hpulogc_stats_t* stats)
 {
     unsigned long long ring_dropped = 0;
@@ -952,6 +1031,8 @@ int hpulogc_get_stats(hpulogc_stats_t* stats)
     stats->dropped = ring_dropped + lost;
     stats->overwritten = ring_overwritten;
     stats->throttled = hpu_at_load_u64(&g_rt.st_throttled, HPU_MO_ACQUIRE);
+    stats->fields_dropped =
+        hpu_at_load_u64(&g_rt.st_fields_dropped, HPU_MO_ACQUIRE);
     stats->written = written_counter - lost;
     if (g_rt.ring != NULL) {
         stats->buffer_used = hpu_ring_used(g_rt.ring);

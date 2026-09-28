@@ -43,8 +43,9 @@ typedef struct hpu_ring_meta {
     uint16_t category_len; /*!< Category byte count */
     uint16_t file_len;     /*!< File name byte count */
     uint16_t func_len;     /*!< Function name byte count */
-    uint16_t reserved;     /*!< Padding to 8-byte alignment */
-} hpu_ring_meta_t;         /* 48 bytes */
+    uint16_t field_count;  /*!< Structured field count (§4.11.4); was
+                                *   reserved padding before rd_v0.6 */
+} hpu_ring_meta_t;         /* layout-frozen header (56 bytes incl. padding) */
 
 /** @brief Extract the severity level from level_flags. */
 #define HPU_REC_LEVEL(lf)  ((int)((lf) & 0xFFU))
@@ -67,16 +68,22 @@ typedef struct hpu_ring_msg {
     int64_t     mono_us;       /*!< Monotonic capture timestamp */
     const char* msg;           /*!< Rendered message bytes */
     uint32_t    msg_len;       /*!< Message byte count */
+    const uint8_t* fields_wire; /*!< Pre-serialized field region (§4.11.4;
+                                 *   NULL when no fields); copied after msg */
+    uint32_t    fields_len;    /*!< Wire region byte count (8-aligned) */
+    uint16_t    field_count;   /*!< Number of encoded fields */
 } hpu_ring_msg_t;
 
 /** @brief Consumer-side view of one record (pointers into ring memory,
  *         valid until the next hpu_ring_get() call). */
 typedef struct hpu_ring_view {
     hpu_ring_meta_t meta;      /*!< Copy of the record header */
-    const char*     category;  /*!< Category bytes (in ring) */
-    const char*     file;      /*!< File bytes (in ring) */
-    const char*     func;      /*!< Function bytes (in ring) */
-    const char*     msg;       /*!< Message bytes (in ring) */
+    const char*     category;  /*!< Category bytes (in ring/staging) */
+    const char*     file;      /*!< File bytes (in ring/staging) */
+    const char*     func;      /*!< Function bytes (in ring/staging) */
+    const char*     msg;       /*!< Message bytes (in ring/staging) */
+    const uint8_t*  fields_wire; /*!< Field region bytes (in ring/staging) */
+    uint32_t        fields_len;  /*!< Field region byte count */
 } hpu_ring_view_t;
 
 /** @brief Ring operation results. */

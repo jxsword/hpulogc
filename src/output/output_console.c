@@ -1,6 +1,6 @@
 /**
  * @file output_console.c
- * @brief Console output backend (stdout/stderr, terminal-only ANSI color).
+ * @brief Console sink (stdout/stderr, terminal-only ANSI color).
  *
  * Line buffering relies on stdio (full buffering when redirected), so no
  * extra batching buffer is needed here; the consumer flushes per batch.
@@ -30,88 +30,108 @@ static const char* const g_color_reset = "\x1b[0m";
 #endif
 
 /**
- * @brief Console output instance.
+ * @brief Console sink private data (allocated by the core, zeroed).
  */
-typedef struct hpu_console_out {
-    hpu_output_base_t base; /*!< Common header (offset 0) */
-    FILE* stream;           /*!< stdout or stderr */
+typedef struct hpu_console_priv {
+    FILE* stream;           /*!< Resolved stream (init) */
     int   fd;               /*!< Descriptor for the isatty check */
-    int   color;            /*!< Non-zero when color codes are emitted */
-} hpu_console_out_t;
+    int   want_stderr;      /*!< Configured: stream = stderr */
+    int   want_color;       /*!< Configured: color = true */
+    int   color;            /*!< Resolved: color codes are emitted */
+} hpu_console_priv_t;
 
-hpu_output_t* hpu_console_output_open(const hpulogc_output_t* cfg,
-                                      int effective_fsync)
+static int console_configure(hpulogc_sink_t* sink, const char* key,
+                             const char* val)
 {
-    hpu_console_out_t* o = calloc(1, sizeof(*o));
+    hpu_console_priv_t* p = hpulogc_sink_priv(sink);
 
-    if (o == NULL) {
-        return NULL;
+    if (strcmp(key, "stream") == 0) {
+        if (val == NULL || strcmp(val, "stdout") == 0) {
+            p->want_stderr = 0;
+            return 0;
+        }
+        if (strcmp(val, "stderr") == 0) {
+            p->want_stderr = 1;
+            return 0;
+        }
+        return -1;
     }
-    o->base.type = HPULOGC_OUT_CONSOLE;
-    o->base.fsync_sev = effective_fsync;
-    snprintf(o->base.name, sizeof(o->base.name), "console_%s",
-             cfg->stream == 1 ? "stderr" : "stdout");
+    if (strcmp(key, "color") == 0) {
+        if (val == NULL || strcmp(val, "true") == 0 ||
+            strcmp(val, "false") == 0) {
+            p->want_color = val != NULL && strcmp(val, "true") == 0;
+            return 0;
+        }
+        return -1;
+    }
+    return -1; /* unknown key: strict handling by the core */
+}
 
-    o->stream = (cfg->stream == 1) ? stderr : stdout;
-    o->fd = (cfg->stream == 1) ? 2 : 1;
-    o->color = 0;
+static int console_init(hpulogc_sink_t* sink)
+{
+    hpu_console_priv_t* p = hpulogc_sink_priv(sink);
+    hpu_output_base_t* b = hpu_sink_base(sink);
+
+    p->stream = p->want_stderr ? stderr : stdout;
+    p->fd = p->want_stderr ? 2 : 1;
+    if (b->name[0] == '\0') {
+        snprintf(b->name, sizeof(b->name), "console_%s",
+                 p->want_stderr ? "stderr" : "stdout");
+    }
+    p->color = 0;
 #if HPULOGC_ENABLE_COLOR
-    if (cfg->color && hpu_fs_isatty(o->fd)) {
-        o->color = 1; /* redirected pipes/files stay plain (spec 4.7) */
+    if (p->want_color && hpu_fs_isatty(p->fd)) {
+        p->color = 1; /* redirected pipes/files stay plain (spec 4.7) */
     }
-#else
-    (void)cfg;
 #endif
-    return (hpu_output_t*)(void*)o;
+    return 0;
 }
 
-int hpu_console_output_write_line(hpu_output_t* o, const char* line,
-                                  size_t len, int level)
+static void console_emit(hpulogc_sink_t* sink, const hpulogc_event_t* ev)
 {
-    hpu_console_out_t* c = (hpu_console_out_t*)(void*)o;
+    hpu_console_priv_t* p = hpulogc_sink_priv(sink);
 
 #if HPULOGC_ENABLE_COLOR
-    if (c->color && level >= 0 && level <= 5) {
-        fwrite(g_level_colors[level], 1, strlen(g_level_colors[level]),
-               c->stream);
-        fwrite(line, 1, len, c->stream);
-        fwrite(g_color_reset, 1, strlen(g_color_reset), c->stream);
-        return 0;
+    if (p->color && ev->level >= 0 && ev->level <= 5) {
+        fwrite(g_level_colors[ev->level], 1,
+               strlen(g_level_colors[ev->level]), p->stream);
+        fwrite(ev->line, 1, ev->line_len, p->stream);
+        fwrite(g_color_reset, 1, strlen(g_color_reset), p->stream);
+        return;
     }
-#else
-    (void)level;
 #endif
-    fwrite(line, 1, len, c->stream);
-    return ferror(c->stream) != 0 ? -1 : 0;
-}
-
-int hpu_console_output_flush(hpu_output_t* o)
-{
-    hpu_console_out_t* c = (hpu_console_out_t*)(void*)o;
-
-    return fflush(c->stream) == 0 ? 0 : -1;
-}
-
-int hpu_output_write_direct(hpu_output_t* o, const char* bytes, size_t len)
-{
-    hpu_output_base_t* b = (hpu_output_base_t*)(void*)o;
-
-    if (b->type == HPULOGC_OUT_CONSOLE) {
-        hpu_console_out_t* c = (hpu_console_out_t*)(void*)o;
-
-        fwrite(bytes, 1, len, c->stream);
-        return ferror(c->stream) != 0 ? -1 : 0;
+    fwrite(ev->line, 1, ev->line_len, p->stream);
+    if (ferror(p->stream)) {
+        hpu_sink_account_failed(sink, 1);
     }
-    return hpu_file_output_write_line(o, bytes, len);
 }
 
-void hpu_output_close_impl(hpu_output_t* o)
+static int console_flush(hpulogc_sink_t* sink)
 {
-    hpu_output_base_t* b = (hpu_output_base_t*)(void*)o;
+    hpu_console_priv_t* p = hpulogc_sink_priv(sink);
 
-    if (b->type == HPULOGC_OUT_CONSOLE) {
-        free(o);
-    } else {
-        hpu_file_output_close(o);
-    }
+    return fflush(p->stream) == 0 ? 0 : -1;
+}
+
+/** @brief Console sink type (SYNC|ASYNC|LINE_ATOMIC; no fsync semantics). */
+static const hpulogc_sink_ops_t g_console_ops = {
+    "console",
+    HPULOGC_SINK_ABI_VERSION,
+    HPULOGC_CAP_SYNC | HPULOGC_CAP_ASYNC | HPULOGC_CAP_LINE_ATOMIC,
+    sizeof(hpu_console_priv_t),
+    console_configure,
+    console_init,
+    NULL, /* start: no external resource */
+    console_emit,
+    NULL, /* emit_batch: core loops emit */
+    console_flush,
+    NULL, /* sync: no fsync semantics */
+    NULL, /* periodic: no fsync bookkeeping */
+    NULL, /* destroy: priv lives in the instance allocation */
+    { NULL, NULL, NULL, NULL }
+};
+
+const hpulogc_sink_ops_t* hpu_console_sink_ops(void)
+{
+    return &g_console_ops;
 }
