@@ -267,20 +267,25 @@ static void lf_wait(hpu_ring_t* r, uint64_t deadline_ms)
 static int lf_wait_commit(hpu_ring_t* r, uint64_t d, uint64_t deadline_ms)
 {
     for (;;) {
-        uint64_t m = hpu_at_load_u64(
+        uint64_t m;
+
+        /* Freshness FIRST: when deq == d the physical slot belongs to the
+         * live record (producers never touch it, so reading its commit
+         * word races nothing); a stale cursor may point into a slot the
+         * producer is already rewriting after a wrap. */
+        if (hpu_at_load_u64(&r->deq, HPU_MO_ACQUIRE) != d) {
+            return -1; /* our cursor is stale: reload deq */
+        }
+        m = hpu_at_load_u64(
             (const hpu_atomic_u64*)(const void*)(r->buf + d % r->capacity),
             HPU_MO_ACQUIRE);
         if (m == d + 1) {
             return 1;
         }
         if (m > d + 1) {
-            return -1; /* our cursor is stale: reload deq */
+            return -1; /* claimed by another consumer: reload deq */
         }
-        /* m == 0 (being written, being invalidated, or stale older
-         * marker): keep waiting, but bail out when deq moved. */
-        if (hpu_at_load_u64(&r->deq, HPU_MO_ACQUIRE) != d) {
-            return -1;
-        }
+        /* m == 0: being written by the producer; spin until the deadline. */
         if (hpu_now_ns() / 1000000ULL >= deadline_ms) {
             return 0;
         }
@@ -570,6 +575,15 @@ int hpu_ring_get(hpu_ring_t* r, hpu_ring_view_t* out, void* staging,
                 uint64_t expected = d + 1;
                 uint32_t total;
 
+                /* Freshness gate before the lease CAS: with deq == d the
+                 * slot is the live record (producers cannot rewrite it),
+                 * so a successful CAS can never land inside a reused
+                 * record's payload after a wrap. deq cannot skip d without
+                 * d's own lease, so this check plus the CAS is airtight. */
+                if (hpu_at_load_u64(&r->deq, HPU_MO_ACQUIRE) != d) {
+                    hpu_cpu_relax();
+                    continue;
+                }
                 if (hpu_at_cas_u64(&h->commit, &expected, d + 2,
                                    HPU_MO_ACQ_REL, HPU_MO_ACQUIRE) == 0) {
                     hpu_cpu_relax();
