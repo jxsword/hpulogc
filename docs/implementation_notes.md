@@ -403,8 +403,10 @@ Clang）承担（见 .github/workflows/ci.yml 的 macOS 矩阵，指令 4）。
   线程 ID（契约 hpu_tid.h 指定；POSIX 层的 pthread_self 指针强转
   fallback 不是系统级 ID）。macOS 10.6+ 可用，无需缓存。
 - **watcher**：按 §16.3 "kqueue 或轮询回退"的选择，Phase 3 使用
-  POSIX 轮询后端（posix_watcher.c + posix_watcher_poll.c）；
-  kqueue（EVFILT_VNODE）为可选增强，列入遗留事项。
+  POSIX 轮询后端；后续增强工单实现 kqueue（EVFILT_VNODE）后端
+  （darwin_watcher.c：文件 vnode 写/删/改名 + 父目录事件经 stat
+  基线确认，删除/改名后下一次等待自动重挂新 vnode，kqueue 不可用
+  时透明回退轮询），原 posix_watcher.c 仅保留给无原生机制的平台。
 - **原子后端**：无需新代码。C11 走 `<stdatomic.h>`（Apple Clang
   探测通过），C99 走 `__atomic_*`；`atomic_gcc.h`/`atomic_stdatomic.h`
   直接复用，OSAtomic* 按规范禁用未使用。
@@ -463,8 +465,8 @@ PR #2（`phase3/macos`）三轮迭代后 **run 35485896218 结论 success**，
   覆盖 Windows 内存检查（Phase 2 报告 §记录）；macOS 侧由
   CI 的 ASan（含 LSan）覆盖。
 - **24h 压测**：发布前门禁，非本次范围（同 Phase 1/2 记录）。
-- **遗留（可选增强）**：kqueue (EVFILT_VNODE) watcher 后端、
-  universal binary（x86_64+arm64 单文件）；均非 §16.3 DoD 要求。
+- **遗留（可选增强）**：universal binary（x86_64+arm64 单文件）；
+  非 §16.3 DoD 要求。kqueue watcher 后端已实现（见 watcher 条目）。
 
 ---
 

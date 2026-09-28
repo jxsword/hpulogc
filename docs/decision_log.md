@@ -221,3 +221,27 @@
   （全访问点、stop 等待 busy、持锁释放 conf、清理误留 [DBG] 打印）、
   `hotreload.c`（入口快照 + 状态复核 + busy 访问器）；TSan nightly
   从此无预期内失败。同工单记录：顺手清理的 [DBG] 为 8b91072 误留。
+
+## D-R2 macOS watcher 升级为 kqueue 后端的监视设计（2026-09-28，增强工单）
+- 背景：implementation_notes 登记的遗留增强项——macOS 配置监视此前
+  恒为 mtime/size 轮询，感知延迟受轮询间隔限制；spec 16.3 允许
+  "kqueue 或轮询回退"。
+- 选项：
+  - A. 仅监视文件 vnode——实现最简 / 编辑器原子替换后旧 vnode 消亡，
+    重新创建的文件无法感知（需靠 reload 失败轮询兜底）/ 代价：监视
+    有空窗
+  - B. 文件 vnode + 父目录 vnode 双监视（选中）——文件事件直接判定；
+    kqueue 无法报告目录内变更条目名，目录事件用 stat 基线（mtime+size，
+    复用 poll 后端的 hpu_poll_snapshot）确认相关性；DELETE/RENAME 后
+    下一次等待自动重挂新 vnode，重建亦可感知 / 实现 比单监视略复杂 /
+    代价：目录事件噪声需一次 stat 消解（可忽略）
+  - C. 保持轮询不变——零风险 / 感知延迟无改善，与"可选增强"目标
+    相悖 / 代价：无
+- 结论：B；kqueue 不可用（fd 限制、沙箱）时透明回退轮询（spec 4.5）。
+- 理由：B 与 Linux inotify 后端语义对齐（目录事件 + 名字过滤），
+  感知延迟降到内核通知级，替换/重建全覆盖；回退路径保证可用性不
+  劣于现状。
+- 影响：`src/platform/darwin/darwin_watcher.c`（新）、
+  `hpu_watcher.h`（append-only 追加 use_kqueue/vnode_dead 字段）、
+  `posix_watcher_poll.{h,c}`（快照函数共享为 hpu_poll_snapshot）、
+  CMakeLists darwin 源替换；macOS CI 全矩阵实测。

@@ -684,6 +684,10 @@ typedef struct {
     int         has_ini;       /*!< Non-zero when the INI parser is compiled in */
     int         lockfree;      /*!< Non-zero when the lock-free ring buffer is compiled in */
     const char* concurrency;   /*!< "spsc", "mpsc" or "mpmc" */
+    const char* sinks;         /*!< Comma-separated compiled-in built-in sink
+                                    types (subset of "console,rollingfile,
+                                    syslog,null"; rd_v0.6 §4.7.4; appended
+                                    at the end, append-only ABI) */
 } hpulogc_build_info_t;
 
 /**

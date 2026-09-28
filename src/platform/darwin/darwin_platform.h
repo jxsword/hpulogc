@@ -11,16 +11,15 @@
  *     MONOTONIC condattr on Linux).
  *   - hpu_tid:   darwin_tid.c - pthread_threadid_np (system-wide id;
  *     deprecated OSAtomic* is forbidden).
- *   - hpu_watcher: the POSIX poll backend (mtime + size) is the Phase 3
- *     backend per spec 16.3 ("kqueue or polling fallback"); a kqueue
- *     (EVFILT_VNODE) backend is a future enhancement.
+ *   - hpu_watcher: the kqueue (EVFILT_VNODE) backend per spec 16.3
+ *     ("kqueue or polling fallback"), with the shared POSIX poll backend
+ *     (mtime + size) as the transparent fallback (darwin_watcher.c).
  *   - hpu_time:  clock_gettime available since macOS 10.12; the POSIX
  *     layer applies directly.
  *   - hpu_fs:    POSIX semantics apply; fchmod/symlink fully supported.
  *
- * Phase 3 directory contents: darwin_sync.c and darwin_tid.c plus this
- * snapshot header; darwin_watcher.c is reserved for a future kqueue
- * backend.
+ * Directory contents: darwin_sync.c, darwin_tid.c, darwin_watcher.c
+ * (kqueue backend) plus this snapshot header.
  */
 
 #ifndef HPU_DARWIN_PLATFORM_H

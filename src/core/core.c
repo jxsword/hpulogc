@@ -986,6 +986,17 @@ void hpulogc_get_build_info(hpulogc_build_info_t* info)
 #else
     info->concurrency = "mpsc";
 #endif
+#if defined(HPULOGC_SINK_SYSLOG)
+#if defined(HPULOGC_SINK_NULL)
+    info->sinks = "console,rollingfile,syslog,null";
+#else
+    info->sinks = "console,rollingfile,syslog";
+#endif
+#elif defined(HPULOGC_SINK_NULL)
+    info->sinks = "console,rollingfile,null";
+#else
+    info->sinks = "console,rollingfile";
+#endif
 }
 
 int hpulogc_get_sink_stats(const char* name, hpulogc_sink_stats_t* stats)
