@@ -407,12 +407,14 @@ static void lf_view_from_ring(hpu_ring_view_t* out, hpu_lf_head_t* h)
     out->func     = out->file + h->file_len;
     out->msg      = out->func + h->func_len;
     {
-        char* f = out->msg + h->msg_len;
+        const char* f = out->msg + h->msg_len;
 
-        out->fields_wire = h->field_count > 0 ? (uint8_t*)(void*)f : NULL;
+        out->fields_wire = h->field_count > 0
+                               ? (const uint8_t*)(const void*)f
+                               : NULL;
         out->fields_len = h->field_count > 0
                               ? (size_t)(h->total_len -
-                                         (uint32_t)(f - (char*)h))
+                                         (uint32_t)(f - (const char*)h))
                               : 0;
     }
 }

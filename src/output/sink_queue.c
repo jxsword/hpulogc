@@ -186,7 +186,6 @@ static size_t sq_decode(const sq_worker_ctx_t* ctx, size_t off,
     uint32_t rec_len;
     uint16_t line_len, body_len, cat_len, file_len, func_len;
     uint16_t field_count, fields_len, src_line;
-    uint8_t* p;
 
     if (off + SQ_HDR > q->cap) {
         return 0;
@@ -271,7 +270,7 @@ static void sq_worker_main(void* arg)
         /* Decode the swept records and emit them batch_size at a time. */
         off = 0;
         while (off + SQ_HDR <= avail) {
-            uint32_t rec_len;
+            size_t rec_len;
 
             n = 0;
             while (n < ctx->batch_max && off + SQ_HDR <= avail) {

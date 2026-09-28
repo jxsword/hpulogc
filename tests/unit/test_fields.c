@@ -180,6 +180,7 @@ TEST(fields_render_v_placeholder)
     rec.field_count = wire_cnt;
     rec.realtime_ns = 0;
     memset(&env, 0, sizeof(env));
+    env.newline_style = HPULOGC_NEWLINE_LF; /* AUTO is CRLF on Windows */
     env.timestamp_source = HPULOGC_TS_MONOTONIC; /* deterministic %time */
     env.mono_base_us = 0;
     hpu_fmt_cache_init(&cache);
