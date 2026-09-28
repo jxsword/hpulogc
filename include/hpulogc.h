@@ -273,6 +273,8 @@ typedef struct {
     const char*          truncation_marker;   /*!< Marker appended on full-line truncation, default "...[TRUNCATED]" */
     hpulogc_crash_safety_t crash_safety;      /*!< Global fsync policy, default shutdown */
     int                  signal_safe;         /*!< Enable hpulogc_log_signal_safe output, default 0 */
+    /* Appended in rd_v0.3 (append-only ABI rule): consumer count */
+    uint32_t             consumer_threads;    /*!< Consumer threads, default 1; values > 1 require the MPMC concurrency build (init-only: hot reload ignores changes) */
 } hpulogc_config_t;
 
 /**
@@ -413,7 +415,7 @@ typedef struct {
     int         has_throttle;  /*!< Non-zero when rate limiting/sampling is compiled in */
     int         has_ini;       /*!< Non-zero when the INI parser is compiled in */
     int         lockfree;      /*!< Non-zero when the lock-free ring buffer is compiled in */
-    const char* concurrency;   /*!< "spsc" or "mpsc" */
+    const char* concurrency;   /*!< "spsc", "mpsc" or "mpmc" */
 } hpulogc_build_info_t;
 
 /**

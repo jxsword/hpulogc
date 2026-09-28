@@ -322,6 +322,14 @@ static void hpu_atfork_child(void)
         hpu_ring_discard(g_rt.ring); /* skip cond destroy (decision 3) */
         g_rt.ring = NULL;
     }
+    /* Consumer threads do not exist in the child (only the thread that
+     * called fork survived); drop their bookkeeping so the lazy rebuild
+     * starts a fresh set. The inherited allocations are abandoned like
+     * the ring above. */
+    g_rt.consumer_threads = NULL;
+    g_rt.flush_ack = NULL;
+    g_rt.consumer_count = 0;
+    hpu_at_store_u32(&g_rt.consumer_alive, 0, HPU_MO_RELAXED);
     if (g_rt.fork_behavior == HPU_FORK_REINIT) {
         hpu_at_store_u32(&g_rt.fork_dirty, 1, HPU_MO_RELEASE);
     }
@@ -422,9 +430,11 @@ int hpu_core_start(hpu_conf_t* c)
 {
     int policy = hpu_core_ring_policy();
 #if defined(HPULOGC_CONCURRENCY_SPSC)
-    enum { spsc_flag = 1 };
+    enum { ring_mode = HPU_RING_MODE_SPSC };
+#elif defined(HPULOGC_CONCURRENCY_MPMC)
+    enum { ring_mode = HPU_RING_MODE_MPMC };
 #else
-    enum { spsc_flag = 0 };
+    enum { ring_mode = HPU_RING_MODE_MPSC };
 #endif
 
     g_rt.conf = c;
@@ -444,7 +454,7 @@ int hpu_core_start(hpu_conf_t* c)
     (void)hpu_atfork_register(hpu_atfork_child);
 
 #if HPULOGC_ENABLE_ASYNC
-    g_rt.ring = hpu_ring_create(c->buffer_size, policy, spsc_flag);
+    g_rt.ring = hpu_ring_create(c->buffer_size, policy, ring_mode);
     if (g_rt.ring == NULL) {
         goto fail;
     }
@@ -523,7 +533,9 @@ int hpu_core_ring_policy(void)
     if (policy == HPULOGC_OVERFLOW_WAIT) {
         policy = HPULOGC_OVERFLOW_DISCARD; /* defensive; rejected at init */
     }
-#if defined(HPULOGC_CONCURRENCY_MSPC)
+#if !defined(HPULOGC_CONCURRENCY_SPSC)
+    /* Lock-free MPSC/MPMC: overwrite would require cooperative head
+     * advancement; rejected at init, mapped defensively here. */
     if (policy == HPULOGC_OVERFLOW_OVERWRITE) {
         policy = HPULOGC_OVERFLOW_DISCARD;
     }
@@ -711,6 +723,7 @@ void hpulogc_config_default(hpulogc_config_t* cfg)
     cfg->batch_size = 64;
     cfg->flush_interval_ms = 100;
     cfg->shutdown_timeout_ms = 5000;
+    cfg->consumer_threads = 1;
     cfg->escape_injection = 1;
     cfg->max_log_length = 4096;
     cfg->truncation_marker = NULL; /* NULL = "...[TRUNCATED]" */
@@ -893,6 +906,8 @@ void hpulogc_get_build_info(hpulogc_build_info_t* info)
     info->lockfree = HPULOGC_LOCKFREE;
 #if defined(HPULOGC_CONCURRENCY_SPSC)
     info->concurrency = "spsc";
+#elif defined(HPULOGC_CONCURRENCY_MPMC)
+    info->concurrency = "mpmc";
 #else
     info->concurrency = "mpsc";
 #endif

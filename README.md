@@ -5,7 +5,7 @@
 
 纯 C99/C11、零第三方依赖、跨平台的高性能日志库（Linux / Windows / macOS）。
 
-- **无锁环形缓冲**（SPSC/MPSC，discard/overwrite 溢出策略）与有锁实现二选一
+- **无锁环形缓冲**（SPSC/MPSC/MPMC，discard/overwrite 溢出策略）与有锁实现二选一；MPMC 支持 N 个消费者线程（rd_v0.3）
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
 - **INI 配置**（zlog 兼容词法）+ 热加载（inotify/SIGHUP/轮询）+ 原子替换回滚
 - **路由规则**（类目选择器 × 级别范围）、5 个内置格式 + 自定义命名格式
@@ -129,10 +129,10 @@ cmake --build build && ctest --test-dir build
 全矩阵验证：
 
 ```bash
-# Linux / macOS（GCC/Clang × C99/C11 × 有锁/无锁 × SPSC/MPSC + 4 预设）
+# Linux / macOS（GCC/Clang × C99/C11 × 有锁/无锁 × SPSC/MPSC/MPMC + 4 预设）
 bash scripts/run_matrix.sh
 
-# Windows MSVC（C99/C11 × 有锁/无锁 × SPSC/MPSC + 4 预设，含零告警门禁）
+# Windows MSVC（C99/C11 × 有锁/无锁 × SPSC/MPSC/MPMC + 4 预设，含零告警门禁）
 powershell -ExecutionPolicy Bypass -File scripts\run_matrix.ps1
 ```
 

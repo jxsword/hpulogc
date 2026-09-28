@@ -85,16 +85,29 @@ typedef struct hpu_ring_view {
 #define HPU_RING_DROPPED 2 /*!< Record dropped per overflow policy */
 
 /**
+ * @brief Build concurrency modes (compile-time, spec rd_v0.3 1.1).
+ *
+ * The mode constrains which overflow policies the implementation supports:
+ * lock-free MPMC supports discard only (same restriction as lock-free
+ * MPSC); the locked implementation supports every policy in every mode.
+ */
+enum hpu_ring_mode {
+    HPU_RING_MODE_SPSC = 0, /*!< Single producer, single consumer */
+    HPU_RING_MODE_MPSC = 1, /*!< Multiple producers, single consumer */
+    HPU_RING_MODE_MPMC = 2  /*!< Multiple producers, multiple consumers */
+};
+
+/**
  * @brief Create a ring buffer.
  *
  * @param capacity_bytes  Ring size in bytes (rounded up to 8; must be at
  *                        least twice the largest record, guaranteed by the
  *                        caller).
  * @param policy          hpulogc_overflow_policy_t value.
- * @param spsc            Non-zero when the build concurrency is SPSC.
+ * @param mode            One of enum hpu_ring_mode (build concurrency).
  * @return                Ring handle or NULL on allocation failure.
  */
-hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int spsc);
+hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int mode);
 
 /**
  * @brief Destroy a ring buffer and free its memory.
@@ -131,6 +144,12 @@ int hpu_ring_put(hpu_ring_t* r, const hpu_ring_msg_t* msg);
  * advances; the returned view points into @p staging and stays valid until
  * the next hpu_ring_get(). Copying makes the view immune to the overwrite
  * policy reusing ring memory while the consumer formats.
+ *
+ * In MPMC builds a staging buffer is REQUIRED: with several consumers
+ * advancing the read cursor, ring memory behind the cursor may be reused
+ * by producers while a consumer still formats, so an unstaged view is
+ * unsafe (single-consumer builds keep the historical caller-beware
+ * behavior).
  *
  * @param r             Ring handle.
  * @param out           Filled with a view into @p staging.

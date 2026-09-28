@@ -2,8 +2,8 @@
 # scripts/run_matrix.ps1 - hpulogc Phase 2 Windows verification matrix
 #
 # Builds and runs the full CTest suite for:
-#   - functional matrix: {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
-#     (8 combinations on the single Windows toolchain, spec 13.5)
+#   - functional matrix: {C99, C11} x {locked, lockfree} x {SPSC, MPSC, MPMC}
+#     (12 combinations on the single Windows toolchain, spec 13.5 / rd_v0.3)
 #   - the four build presets (spec 5)
 #
 # Usage:
@@ -63,12 +63,12 @@ function Run-Combo([string]$Name, [string[]]$CmakeArgs) {
 }
 
 # ---------------------------------------------------------------------------
-# Functional matrix: {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
+# Functional matrix: {C99, C11} x {locked, lockfree} x {SPSC, MPSC, MPMC}
 # ---------------------------------------------------------------------------
-Write-Host "==== functional matrix: {99,11} x {locked,lockfree} x {SPSC,MPSC} ===="
+Write-Host "==== functional matrix: {99,11} x {locked,lockfree} x {SPSC,MPSC,MPMC} ===="
 foreach ($std in @("99", "11")) {
     foreach ($lockfree in @("OFF", "ON")) {
-        foreach ($conc in @("SPSC", "MPSC")) {
+        foreach ($conc in @("SPSC", "MPSC", "MPMC")) {
             $lfTag = if ($lockfree -eq "ON") { "lf" } else { "lk" }
             $name = "msvc_c$std`_$lfTag`_$conc"
             Run-Combo $name @(

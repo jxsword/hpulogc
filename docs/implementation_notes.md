@@ -31,6 +31,9 @@
 | 22 | 同步构建 flush 语义为 best-effort（Phase 2） | §7.3 |
 | 23 | Windows 二进制模式无条件切换（Phase 2） | §12 |
 | 24 | Windows JSON 校验降级为内置检查（Phase 2） | §13.2 |
+| 25 | MPMC 单共享环 + N 对称消费者，记录恰好一次投递（Phase 4） | rd_v0.3 §1.1 |
+| 26 | `[async] consumer threads` 配置键与构建门禁（Phase 4） | rd_v0.3 §1.3 |
+| 27 | 无锁 MPMC commit 字租约认领协议，discard 路径 TSan 干净（Phase 4） | rd_v0.3 §1.2/§5 |
 
 ## 1. 代码内配置输出的隐式命名（影响 §7.6）
 
@@ -462,3 +465,74 @@ PR #2（`phase3/macos`）三轮迭代后 **run 35485896218 结论 success**，
 - **24h 压测**：发布前门禁，非本次范围（同 Phase 1/2 记录）。
 - **遗留（可选增强）**：kqueue (EVFILT_VNODE) watcher 后端、
   universal binary（x86_64+arm64 单文件）；均非 §16.3 DoD 要求。
+
+---
+
+# Phase 4（MPMC 跨平台扩展，规范依据 docs/rd_v0.3.md）
+
+## A. 决策登记（新增决策 25–27）
+
+| # | 决策 | 影响章节（rd_v0.3） |
+|---|------|---------------------|
+| 25 | MPMC 采用单共享环 + N 对称消费者：每条记录恰好被一个消费者认领处理；处理阶段沿用全局 conf_lock（v1 并行化出队；每消费者独立输出缓冲列为后续优化）。**MPMC 不保证记录间全局输出顺序**（文档明示，调用方需顺序保证时用 SPSC/MPSC） | §1.1 |
+| 26 | 消费者数量来自 `[async] consumer threads`（默认 1，范围 1–16，init-only、热加载忽略+警告）；非 MPMC 构建 > 1 → `HPULOGC_ERR_CONFIG`（沿用"值合法但构建不支持"fail-fast 规则）；默认 1 保证配置文件跨构建可移植 | §1.3 |
+| 27 | 无锁 MPMC 出队采用 **commit 字租约认领**：消费者先 CAS 记录头 commit 字（`pos+1 → pos+2`）获得独占读租约，**租约持有期间拷贝**（拷贝跳过 commit 字本身），完成后推进 `deq`。租约期内生产者不可能复用该内存（deq 未越过），因此无锁 MPMC discard 路径**物理无数据竞争、TSan 干净**——与无锁 overwrite 的 seqlock 固有物理竞争（决策 4、TSan 跳测）本质不同。SPSC/MPSC 保持原单消费者路径零开销 | §1.2/§5 |
+
+补充要点：
+
+- **消费者唤醒计数器**：无锁环 `consumer_waiting` 由单标志改为计数
+  （fetch_add/fetch_sub），lf_kick 条件 `!= 0` 不变；多消费者同 Park/
+  同广播语义保持，互斥量握手仍关闭丢唤醒窗口。
+- **flush 握手**：`flush_done` 单计数改为每消费者 ack 数组；flush 等
+  待环空且全部 ack ≥ seq（上限仍随 shutdown timeout）。
+- **shutdown**：`consumer_alive` 改为存活计数；stop 置共享 exit 标志
+  → kick → 有界等计数归零 → join 全部 → 释放数组。
+- **fork**：atfork 子进程处理器重置消费者簿记（线程数组/ack 数组置
+  NULL、存活计数清零），惰性重建按当前配置重新拉起 N 个消费者（与
+  既有 ring discard 决策 3 同风格，继承分配被放弃）。
+- **staging 内存**：每消费者按环容量独立分配（N × buffer size），
+  缩减为按最大记录分配列为后续优化（rd_v0.3 §5）。
+- **统计口径**：`written` 等计数本为原子累加，多消费者并发递增无需
+  改动；stats 周期报告仅由 0 号消费者发出（避免 N 倍输出）。
+
+## B. 测试扩展
+
+- `tests/unit/test_ring.c`：`HPU_RING_TEST_CONC=2`（MPMC）组合；
+  新增 `ring_stress_mpmc_no_loss`（4P×2000×4C，exactly-once 矩阵逐格
+  校验）、`ring_stress_mpmc_discard_pressure`（8KB 环记账恒等式）、
+  `ring_mpmc_close_drain`（关环后启动消费者协同排空）、
+  `ring_mpmc_wait_and_overwrite`（有锁 MPMC 的 wait/overwrite 全策略）、
+  `ring_lockfree_mpmc_overwrite_maps_to_discard`（防御性降级）。
+  exactly-once 矩阵用原子单元 fetch_add 标记，重复投递在测试层即为
+  显式断言失败。
+- `tests/integration/test_mpmc.c`（仅 MPMC 构建注册）：端到端
+  4 消费者、flush 先于 shutdown 可见性、统计恒等式、构建信息字符串、
+  配置范围校验。
+- `tests/unit/test_lifecycle.c`：`consumer_threads_gating` 全构建
+  门禁（范围校验 + 非 MPMC 构建 fail-fast / MPMC 构建成功双断言）。
+- 环测试组合 4→6（locked/lockfree × SPSC/MPSC/MPMC）。
+
+## C. 验证结果索引（本地 Linux，全量）
+
+| 项 | 结果 |
+|----|------|
+| `scripts/run_matrix.sh`（扩展后 24 组合：{gcc,clang}×{99,11}×{有锁,无锁}×{SPSC,MPSC,MPMC}） | 24/24 全绿 |
+| MPMC 构建（locked 默认 + lockfree）完整 ctest | 19/19 全绿（18 + test_mpmc） |
+| ASan+UBSan（默认构建） | 18/18 全绿，零报告 |
+| TSan（lockfree MPMC，RelWithDebInfo） | test_ring_lockfree_mpmc 连续 3 轮零竞争报告；locked MPMC 同样零报告 |
+| Windows / macOS | 按 Phase 2/3 同惯例完全由 GitHub Actions 承担（见 ci.yml / win_msvc.yml 的 MPMC 组合） |
+
+## D. 预存缺陷登记（本阶段发现，非 MPMC 引入；缺陷通道，待后续修复）
+
+TSan（Linux，lockfree 构建）下 `test_pipeline` 报告两处数据竞争，
+已用干净 worktree 在 main（commit 2910402）复现，与 MPMC 改动无关：
+
+| # | 位置 | 竞争 | 说明 |
+|---|------|------|------|
+| P-1 | `src/core/core.c` / `hpu_runtime_t.state` | watcher 线程在 `hpu_core_trigger_reload` 入口读取 `g_rt.state`（普通 int） vs init/shutdown 线程的普通写 | `state` 的"普通 int read-mostly"是 Phase 1 文档化设计（core.c 头注释；§7.5 不承诺 init/shutdown 与其他 API 并发），TSan 无法建模该约定 |
+| P-2 | `src/core/hotreload.c` Phase 1 解析路径 | `hpu_conf_finalize_reload(fresh, g_rt.conf, ...)` 在**未持 conf_lock** 的情况下读取 `g_rt.conf` 指针，与换代写（持锁）构成指针大小竞争 | 修复方向：读指针入临界区或改为原子指针；因涉及热加载关键路径，留独立缺陷工单，不在 MPMC PR 内夹带 |
+
+影响：TSan 定时任务中 `test_pipeline` 以退出码 66 失败（TSan 惯例
+exitcode=66）。该失败在 main 上即存在；MPMC 组合加入 TSan 矩阵不改
+变其状态。MPMC 自身新增路径（ring 租约认领、多消费者 core/flush/
+shutdown）经上述 C 节验证为 TSan 干净。

@@ -124,6 +124,12 @@ int hpu_core_trigger_reload(void)
                 "hpulogc: reload: [buffer] changes are ignored (buffer is "
                 "fixed at init)\n");
     }
+    /* Consumer count is init-time only as well (rd_v0.3 1.3). */
+    if (fresh->consumer_threads != g_rt.conf->consumer_threads) {
+        fprintf(stderr,
+                "hpulogc: reload: [async] consumer threads changes are "
+                "ignored (fixed at init)\n");
+    }
 
     /* Phases 2/3 under the conf lock: move reused handles, swap, retire
      * and close the replaced outputs. */

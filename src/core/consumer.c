@@ -2,14 +2,20 @@
 
 /**
  * @file consumer.c
- * @brief Async consumer thread: batched retrieval -> route/format/write,
+ * @brief Async consumer thread(s): batched retrieval -> route/format/write,
  *        flush handshake, periodic fsync and periodic stats reporting
- *        (spec 4.4/4.9/7.5/10.3).
+ *        (spec 4.4/4.9/7.5/10.3; MPMC extension spec rd_v0.3).
  *
  * Batching model: each record is rendered and appended to the outputs'
  * write buffers individually (the file backend coalesces bytes); a
  * physical submit (buffer flush) happens every batch_size records or
  * when the ring runs empty at the flush interval.
+ *
+ * MPMC builds run N symmetric consumer threads (configuration key
+ * `consumer threads`); every record is claimed by exactly one of them at
+ * the ring level. Processing stays serialized under the conf lock, so
+ * output content is identical to a single consumer up to inter-record
+ * ordering (rd_v0.3 1.1).
  */
 
 #include "core_internal.h"
@@ -31,6 +37,18 @@ typedef struct consumer_tunables {
     int      stats_file_mode;   /*!< 0 = stderr, 1 = stats file */
     char     stats_file[HPULOGC_MAX_PATH_LEN];
 } consumer_tunables_t;
+
+/**
+ * @brief Per-consumer-thread context (one element per consumer thread).
+ */
+typedef struct hpu_consumer_ctx {
+    uint32_t idx;      /*!< Consumer slot (index into g_rt arrays) */
+    char*    staging;  /*!< Private record staging buffer */
+    size_t   staging_len; /*!< Staging size in bytes */
+} hpu_consumer_ctx_t;
+
+/** @brief Consumer thread table (consumer_count elements, start..stop). */
+static hpu_consumer_ctx_t* g_consumer_ctx = NULL;
 
 /* Sleep uses the shared hpu_core_sleep_ms() helper (core.c). */
 
@@ -72,7 +90,8 @@ static void consumer_stats_report(const consumer_tunables_t* tun)
  * Also refreshes @p tun from the active snapshot so hot-reloaded [async]
  * and stats values apply from the next idle cycle on.
  */
-static void consumer_idle_tasks(consumer_tunables_t* tun, size_t* last_ms)
+static void consumer_idle_tasks(hpu_consumer_ctx_t* ctx,
+                                consumer_tunables_t* tun, size_t* last_ms)
 {
     uint64_t now_ns = hpu_now_ns();
     uint64_t req;
@@ -104,11 +123,14 @@ static void consumer_idle_tasks(consumer_tunables_t* tun, size_t* last_ms)
     memcpy(tun->stats_file, g_rt.conf->stats_file, sizeof(tun->stats_file));
     hpu_mutex_unlock(&g_rt.conf_lock);
 
-    /* Flush handshake: everything enqueued so far has been submitted. */
+    /* Flush handshake: everything enqueued so far has been submitted by
+     * THIS consumer; the flusher waits until every consumer acked. */
     req = hpu_at_load_u64(&g_rt.flush_req, HPU_MO_ACQUIRE);
-    hpu_at_store_u64(&g_rt.flush_done, req, HPU_MO_RELEASE);
+    hpu_at_store_u64(&g_rt.flush_ack[ctx->idx], req, HPU_MO_RELEASE);
 
-    if (stats_iv > 0) {
+    if (stats_iv > 0 && ctx->idx == 0) {
+        /* One stats report per interval, emitted by the first consumer
+         * only (the report aggregates global counters). */
         uint64_t now_ms = now_ns / 1000000ULL;
 
         if (now_ms >= *last_ms &&
@@ -144,34 +166,33 @@ static void consumer_view_to_rec(const hpu_ring_view_t* view,
 }
 
 /**
- * @brief Consumer thread main loop.
+ * @brief Consumer thread main loop (one instance per consumer thread).
  */
 static void consumer_loop(void* arg)
 {
+    hpu_consumer_ctx_t* ctx = arg;
     hpu_ring_view_t view;
     hpu_log_record_t rec;
-    char* staging;
-    size_t staging_len;
     consumer_tunables_t tun;
     size_t stats_last_ms;
     size_t processed = 0;
 
-    (void)arg;
     memset(&tun, 0, sizeof(tun));
     tun.batch_size = 64;
     tun.flush_interval_ms = 100;
     stats_last_ms = (size_t)(hpu_now_ns() / 1000000ULL);
 
+    hpu_at_fetch_add_u32(&g_rt.consumer_alive, 1, HPU_MO_ACQ_REL);
+
     hpu_mutex_lock(&g_rt.conf_lock);
-    staging_len = g_rt.ring != NULL ? hpu_ring_capacity(g_rt.ring) : 0;
+    ctx->staging_len = g_rt.ring != NULL ? hpu_ring_capacity(g_rt.ring) : 0;
     hpu_mutex_unlock(&g_rt.conf_lock);
 
-    staging = malloc(staging_len);
-    if (staging == NULL) {
+    ctx->staging = malloc(ctx->staging_len);
+    if (ctx->staging == NULL) {
         /* Without staging the consumer cannot copy records out; exit and
          * let shutdown reap the thread. */
-        hpu_at_store_u32(&g_rt.consumer_alive, 0, HPU_MO_RELEASE);
-        return;
+        goto exit_thread;
     }
 
     for (;;) {
@@ -180,7 +201,7 @@ static void consumer_loop(void* arg)
         if (hpu_at_load_u32(&g_rt.consumer_exit, HPU_MO_ACQUIRE) != 0) {
             break;
         }
-        rc = hpu_ring_get(g_rt.ring, &view, staging, staging_len,
+        rc = hpu_ring_get(g_rt.ring, &view, ctx->staging, ctx->staging_len,
                           tun.flush_interval_ms);
         if (rc == HPU_RING_OK) {
             consumer_view_to_rec(&view, &rec);
@@ -191,36 +212,58 @@ static void consumer_loop(void* arg)
 
             processed++;
             if (processed >= tun.batch_size) {
-                consumer_idle_tasks(&tun, &stats_last_ms);
+                consumer_idle_tasks(ctx, &tun, &stats_last_ms);
                 processed = 0;
             }
             continue;
         }
 
         /* Ring empty or timed out: submit the batch + idle bookkeeping. */
-        consumer_idle_tasks(&tun, &stats_last_ms);
+        consumer_idle_tasks(ctx, &tun, &stats_last_ms);
         processed = 0;
     }
 
-    /* Drain whatever remains (the ring is closed by shutdown). */
-    while (hpu_ring_get(g_rt.ring, &view, staging, staging_len, 0) ==
-           HPU_RING_OK) {
+    /* Drain whatever remains (the ring is closed by shutdown). Records
+     * are distributed among the consumers by the ring's claim protocol. */
+    while (hpu_ring_get(g_rt.ring, &view, ctx->staging, ctx->staging_len,
+                        0) == HPU_RING_OK) {
         consumer_view_to_rec(&view, &rec);
         hpu_mutex_lock(&g_rt.conf_lock);
         (void)hpu_pipeline_process(&rec);
         hpu_mutex_unlock(&g_rt.conf_lock);
     }
-    consumer_idle_tasks(&tun, &stats_last_ms);
-    free(staging);
+    consumer_idle_tasks(ctx, &tun, &stats_last_ms);
+    free(ctx->staging);
+    ctx->staging = NULL;
 
+exit_thread:
     hpu_mutex_lock(&g_rt.consumer_mu);
-    hpu_at_store_u32(&g_rt.consumer_alive, 0, HPU_MO_RELEASE);
+    hpu_at_fetch_sub_u32(&g_rt.consumer_alive, 1, HPU_MO_ACQ_REL);
     hpu_cond_broadcast(&g_rt.consumer_cond);
     hpu_mutex_unlock(&g_rt.consumer_mu);
 }
 
+/**
+ * @brief Read the configured consumer thread count (1 when unset).
+ */
+static uint32_t consumer_thread_count(void)
+{
+    uint32_t count;
+
+    hpu_mutex_lock(&g_rt.conf_lock);
+    count = (g_rt.conf != NULL && g_rt.conf->consumer_threads > 0)
+                ? g_rt.conf->consumer_threads
+                : 1;
+    hpu_mutex_unlock(&g_rt.conf_lock);
+    return count;
+}
+
 int hpu_consumer_start(void)
 {
+    uint32_t count = consumer_thread_count();
+    uint32_t started;
+    uint64_t deadline;
+
     if (hpu_mutex_init(&g_rt.consumer_mu) != 0) {
         return -1;
     }
@@ -228,21 +271,72 @@ int hpu_consumer_start(void)
         hpu_mutex_destroy(&g_rt.consumer_mu);
         return -1;
     }
+    g_rt.consumer_threads = calloc(count, sizeof(hpu_thread_t));
+    g_rt.flush_ack = calloc(count, sizeof(hpu_atomic_u64));
+    g_consumer_ctx = calloc(count, sizeof(hpu_consumer_ctx_t));
+    if (g_rt.consumer_threads == NULL || g_rt.flush_ack == NULL ||
+        g_consumer_ctx == NULL) {
+        goto fail_alloc;
+    }
+    g_rt.consumer_count = count;
     hpu_at_store_u32(&g_rt.consumer_exit, 0, HPU_MO_RELAXED);
-    hpu_at_store_u32(&g_rt.consumer_alive, 1, HPU_MO_RELAXED);
-    if (hpu_thread_create(&g_rt.consumer_thread, consumer_loop, NULL) != 0) {
-        hpu_cond_destroy(&g_rt.consumer_cond);
-        hpu_mutex_destroy(&g_rt.consumer_mu);
-        hpu_at_store_u32(&g_rt.consumer_alive, 0, HPU_MO_RELAXED);
-        return -1;
+    hpu_at_store_u32(&g_rt.consumer_alive, 0, HPU_MO_RELAXED);
+
+    for (started = 0; started < count; started++) {
+        g_consumer_ctx[started].idx = started;
+        g_consumer_ctx[started].staging = NULL;
+        g_consumer_ctx[started].staging_len = 0;
+        if (hpu_thread_create(&g_rt.consumer_threads[started], consumer_loop,
+                              &g_consumer_ctx[started]) != 0) {
+            goto fail_threads;
+        }
     }
     return 0;
+
+fail_threads:
+    /* Ask whatever already started to leave, then reap it. */
+    hpu_at_store_u32(&g_rt.consumer_exit, 1, HPU_MO_RELEASE);
+    if (g_rt.ring != NULL) {
+        hpu_ring_kick_consumer(g_rt.ring);
+    }
+    deadline = hpu_now_ns() / 1000000ULL + 5000;
+    hpu_mutex_lock(&g_rt.consumer_mu);
+    while (hpu_at_load_u32(&g_rt.consumer_alive, HPU_MO_ACQUIRE) != 0) {
+        uint64_t now = hpu_now_ns() / 1000000ULL;
+
+        if (now >= deadline) {
+            break;
+        }
+        (void)hpu_cond_timedwait_ms(&g_rt.consumer_cond, &g_rt.consumer_mu,
+                                    50);
+    }
+    hpu_mutex_unlock(&g_rt.consumer_mu);
+
+fail_alloc:
+    {
+        uint32_t i;
+
+        for (i = 0; i < g_rt.consumer_count; i++) {
+            hpu_thread_join(&g_rt.consumer_threads[i]);
+        }
+    }
+    free(g_rt.consumer_threads);
+    g_rt.consumer_threads = NULL;
+    free(g_rt.flush_ack);
+    g_rt.flush_ack = NULL;
+    free(g_consumer_ctx);
+    g_consumer_ctx = NULL;
+    g_rt.consumer_count = 0;
+    hpu_cond_destroy(&g_rt.consumer_cond);
+    hpu_mutex_destroy(&g_rt.consumer_mu);
+    return -1;
 }
 
 void hpu_consumer_stop(void)
 {
     uint32_t timeout_ms;
     uint64_t deadline;
+    uint32_t i;
 
     hpu_mutex_lock(&g_rt.conf_lock);
     timeout_ms = g_rt.conf != NULL ? g_rt.conf->shutdown_timeout_ms : 5000;
@@ -253,7 +347,7 @@ void hpu_consumer_stop(void)
         hpu_ring_kick_consumer(g_rt.ring);
     }
 
-    /* Bounded wait for the consumer to finish draining (spec 7.5). */
+    /* Bounded wait for every consumer to finish draining (spec 7.5). */
     deadline = hpu_now_ns() / 1000000ULL +
                (timeout_ms == 0 ? ~0ULL : (uint64_t)timeout_ms);
     hpu_mutex_lock(&g_rt.consumer_mu);
@@ -261,14 +355,23 @@ void hpu_consumer_stop(void)
         uint64_t now = hpu_now_ns() / 1000000ULL;
 
         if (now >= deadline) {
-            break; /* leave the thread; it exits at the next check */
+            break; /* leave the threads; they exit at the next check */
         }
         (void)hpu_cond_timedwait_ms(&g_rt.consumer_cond, &g_rt.consumer_mu,
                                     50);
     }
     hpu_mutex_unlock(&g_rt.consumer_mu);
 
-    hpu_thread_join(&g_rt.consumer_thread);
+    for (i = 0; i < g_rt.consumer_count; i++) {
+        hpu_thread_join(&g_rt.consumer_threads[i]);
+    }
+    free(g_rt.consumer_threads);
+    g_rt.consumer_threads = NULL;
+    free(g_rt.flush_ack);
+    g_rt.flush_ack = NULL;
+    free(g_consumer_ctx);
+    g_consumer_ctx = NULL;
+    g_rt.consumer_count = 0;
     hpu_cond_destroy(&g_rt.consumer_cond);
     hpu_mutex_destroy(&g_rt.consumer_mu);
 }
@@ -295,9 +398,22 @@ int hpu_consumer_flush(void)
     hpu_mutex_unlock(&g_rt.conf_lock);
     deadline = hpu_now_ns() / 1000000ULL + (uint64_t)timeout_ms;
     for (;;) {
-        if (hpu_ring_used(g_rt.ring) == 0 &&
-            hpu_at_load_u64(&g_rt.flush_done, HPU_MO_ACQUIRE) >= seq) {
-            return 0;
+        if (hpu_ring_used(g_rt.ring) == 0) {
+            /* Every consumer must have run its idle tasks at least once
+             * after the request (per-consumer ack counters). */
+            uint32_t acked = 1;
+            uint32_t i;
+
+            for (i = 0; i < g_rt.consumer_count; i++) {
+                if (hpu_at_load_u64(&g_rt.flush_ack[i], HPU_MO_ACQUIRE) <
+                    seq) {
+                    acked = 0;
+                    break;
+                }
+            }
+            if (acked) {
+                return 0;
+            }
         }
         if (hpu_now_ns() / 1000000ULL >= deadline) {
             return -1; /* best effort: not fully serviced in time */

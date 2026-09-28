@@ -6,22 +6,31 @@
  *  - Producers reserve a byte range with a fetch-and-CAS on a monotonic
  *    reservation cursor (`enq`); the space check compares against a stale
  *    read of the consume cursor, which is always conservative because the
- *    cursor is monotonic.
+ *    cursor is monotonic. SPSC builds use a plain store instead (no race).
  *  - Records are kept contiguous via explicit pad records at the ring
  *    boundary, so consumers read headers and payloads without split copies.
  *  - Publication uses a commit marker equal to (logical position + 1),
  *    stored with release; consumers validate it with acquire loads before
  *    and after copying (seqlock-style), which also detects the overwrite
  *    policy racing the consumer.
- *  - MPSC builds support discard only; SPSC builds additionally support
- *    overwrite (the producer CAS-advances the consume cursor over the
- *    oldest records). Wait is rejected at init by the configuration layer
- *    (spec 4.3); if it ever reaches this file it degrades to discard.
+ *  - Dequeue claiming (MPMC): the consumer first CAS-claims the record
+ *    through its commit word (d+1 -> d+2, an exclusive read lease), THEN
+ *    copies it, then advances `deq`. While the lease is held no producer
+ *    can rewrite the range (producers only reuse bytes behind `deq`,
+ *    which only the lease owner advances past the record), and no other
+ *    consumer can claim it, so the copy is physically race-free and the
+ *    discard path stays TSan-clean. The extra CAS exists only in MPMC
+ *    builds; SPSC/MPSC keep the single-consumer copy-then-advance flow.
+ *  - MPSC and MPMC builds support discard only; SPSC builds additionally
+ *    support overwrite (the producer CAS-advances the consume cursor over
+ *    the oldest records). Wait is rejected at init by the configuration
+ *    layer (spec 4.3); if it ever reaches this file it degrades to discard.
  *
  * The overwrite path performs a deliberate seqlock read that TSan flags by
  * design when producers lap a slow consumer; the ring unit tests for that
  * combination are therefore excluded from TSan runs (documented in
- * docs/implementation_notes.md).
+ * docs/implementation_notes.md). The MPMC discard path is TSan-clean by
+ * construction (claim-then-copy above).
  */
 
 #include "ringbuf.h"
@@ -69,13 +78,13 @@ struct hpu_ring {
     size_t      capacity;        /*!< Ring size in bytes (multiple of 8) */
     char*       buf;             /*!< Ring storage */
     int         policy;          /*!< One of RB_POL_* */
-    int         spsc;            /*!< Non-zero for SPSC builds */
+    int         mode;            /*!< One of enum hpu_ring_mode */
     hpu_atomic_u64 enq;          /*!< Monotonic reservation cursor */
     hpu_atomic_u64 deq;          /*!< Monotonic consume cursor */
     hpu_atomic_u64 dropped;      /*!< discard-policy drops */
     hpu_atomic_u64 overwritten;  /*!< overwrite-policy removals */
     hpu_atomic_u32 closed;       /*!< Set by hpu_ring_close() */
-    hpu_atomic_u32 consumer_waiting; /*!< Consumer parked in lf_wait() */
+    hpu_atomic_u32 consumer_waiting; /*!< Consumers parked in lf_wait() */
     hpu_mutex_t kick_mu;         /*!< Guards the consumer wakeup */
     hpu_cond_t  kick;            /*!< Consumer wakeup signal */
 };
@@ -86,6 +95,29 @@ struct hpu_ring {
 static size_t lf_align8(size_t n)
 {
     return (n + (LF_ALIGN - 1U)) & ~(size_t)(LF_ALIGN - 1U);
+}
+
+/**
+ * @brief Non-zero when several producers race on the enq cursor, so
+ *        reservation must CAS instead of a plain store.
+ */
+static int lf_enq_contended(const hpu_ring_t* r)
+{
+    return r->mode != HPU_RING_MODE_SPSC;
+}
+
+/**
+ * @brief Non-zero when several threads race on the deq cursor, so
+ *        advancing it must CAS instead of a plain store.
+ *
+ * Contended cases: MPMC builds (other consumers advance the cursor) and
+ * SPSC overwrite builds (the producer advances it when freeing space).
+ */
+static int lf_deq_contended(const hpu_ring_t* r)
+{
+    return r->mode == HPU_RING_MODE_MPMC ||
+           (r->policy == RB_POL_OVERWRITE &&
+            r->mode == HPU_RING_MODE_SPSC);
 }
 
 /**
@@ -198,14 +230,16 @@ static void lf_kick(hpu_ring_t* r)
  * @brief Park the consumer until kicked or the deadline passes.
  *
  * Must only be called when the ring was observed empty; the mutex
- * handshake with lf_kick() closes the missed-wakeup window.
+ * handshake with lf_kick() closes the missed-wakeup window. The waiting
+ * flag is a counter so several MPMC consumers can park at once; lf_kick
+ * broadcasts and every woken consumer re-checks the cursor itself.
  */
 static void lf_wait(hpu_ring_t* r, uint64_t deadline_ms)
 {
     uint64_t now = hpu_now_ns() / 1000000ULL;
 
     hpu_mutex_lock(&r->kick_mu);
-    hpu_at_store_u32(&r->consumer_waiting, 1, HPU_MO_RELEASE);
+    hpu_at_fetch_add_u32(&r->consumer_waiting, 1, HPU_MO_ACQ_REL);
 
     /* Re-check under the mutex so a producer that already saw waiting=0
      * cannot slip a wakeup past us. */
@@ -216,7 +250,7 @@ static void lf_wait(hpu_ring_t* r, uint64_t deadline_ms)
                                         (uint32_t)(deadline_ms - now));
         }
     }
-    hpu_at_store_u32(&r->consumer_waiting, 0, HPU_MO_RELAXED);
+    hpu_at_fetch_sub_u32(&r->consumer_waiting, 1, HPU_MO_ACQ_REL);
     hpu_mutex_unlock(&r->kick_mu);
 }
 
@@ -260,7 +294,8 @@ static int lf_wait_commit(hpu_ring_t* r, uint64_t d, uint64_t deadline_ms)
  */
 static int lf_overwrite_make_space(hpu_ring_t* r, uint64_t pos, uint64_t len)
 {
-    if (r->policy != RB_POL_OVERWRITE || !r->spsc) {
+    if (r->policy != RB_POL_OVERWRITE ||
+        r->mode != HPU_RING_MODE_SPSC) {
         return 0;
     }
     for (;;) {
@@ -296,14 +331,14 @@ static int lf_overwrite_make_space(hpu_ring_t* r, uint64_t pos, uint64_t len)
 /**
  * @brief Advance the consume cursor over the record at @p d.
  *
- * Uses CAS in overwrite builds where the producer also advances the
- * cursor; a plain store otherwise. Returns 0 when the CAS lost (another
- * writer moved deq first, meaning the record was freed by the overwrite
- * policy).
+ * Uses CAS whenever the cursor is contended (see lf_deq_contended());
+ * returns 0 when the CAS lost, meaning another thread claimed the record
+ * first and the caller must retry from the current cursor. A plain store
+ * is enough in the single-consumer uncontended cases.
  */
 static int lf_advance_deq(hpu_ring_t* r, uint64_t d, uint32_t total)
 {
-    if (r->policy == RB_POL_OVERWRITE && r->spsc) {
+    if (lf_deq_contended(r)) {
         uint64_t expected = d;
         return hpu_at_cas_u64(&r->deq, &expected, d + total, HPU_MO_RELEASE,
                               HPU_MO_ACQUIRE);
@@ -358,7 +393,7 @@ static void lf_view_from_ring(hpu_ring_view_t* out, hpu_lf_head_t* h)
     out->msg      = out->func + h->func_len;
 }
 
-hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int spsc)
+hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int mode)
 {
     hpu_ring_t* r;
 
@@ -371,9 +406,13 @@ hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int spsc)
         return NULL;
     }
     r->capacity = lf_align8(capacity_bytes);
-    r->policy   = (policy == RB_POL_OVERWRITE && !spsc) ? RB_POL_DISCARD
-                                                        : policy;
-    r->spsc     = spsc;
+    /* Overwrite is SPSC-only in lock-free builds (spec rd_v0.3 1.2); the
+     * configuration layer already rejects it, this is defense in depth. */
+    r->policy   = (policy == RB_POL_OVERWRITE &&
+                   mode != HPU_RING_MODE_SPSC)
+                      ? RB_POL_DISCARD
+                      : policy;
+    r->mode     = mode;
     r->buf      = malloc(r->capacity);
     if (r->buf == NULL) {
         free(r);
@@ -435,7 +474,7 @@ int hpu_ring_put(hpu_ring_t* r, const hpu_ring_msg_t* msg)
                 hpu_at_fetch_add_u64(&r->dropped, 1, HPU_MO_RELAXED);
                 return HPU_RING_DROPPED;
             }
-            if (r->spsc) {
+            if (!lf_enq_contended(r)) {
                 hpu_at_store_u64(&r->enq, pos + pad, HPU_MO_RELEASE);
             } else {
                 uint64_t expected = pos;
@@ -464,7 +503,7 @@ int hpu_ring_put(hpu_ring_t* r, const hpu_ring_msg_t* msg)
         }
 
         /* Reserve the byte range. */
-        if (r->spsc) {
+        if (!lf_enq_contended(r)) {
             hpu_at_store_u64(&r->enq, pos + total, HPU_MO_RELEASE);
         } else {
             uint64_t expected = pos;
@@ -497,7 +536,64 @@ int hpu_ring_get(hpu_ring_t* r, hpu_ring_view_t* out, void* staging,
                 return HPU_RING_EMPTY; /* producer still publishing */
             }
             if (state < 0) {
-                continue; /* cursor stale: retry from the current deq */
+                hpu_cpu_relax();
+                continue; /* cursor stale or claimed: retry from deq */
+            }
+
+            if (r->mode == HPU_RING_MODE_MPMC) {
+                /* Claim an exclusive read lease through the commit word
+                 * (d+1 -> d+2). The winner is the only consumer allowed
+                 * to copy the record, and no producer can rewrite the
+                 * range while the lease is held (deq has not passed it
+                 * yet), so the copy below is physically race-free. */
+                size_t off = (size_t)(d % r->capacity);
+                hpu_lf_head_t* h = (hpu_lf_head_t*)(void*)(r->buf + off);
+                uint64_t expected = d + 1;
+                uint32_t total;
+
+                if (hpu_at_cas_u64(&h->commit, &expected, d + 2,
+                                   HPU_MO_ACQ_REL, HPU_MO_ACQUIRE) == 0) {
+                    hpu_cpu_relax();
+                    continue; /* another consumer claimed this record */
+                }
+
+                total = h->total_len;
+                if (total < sizeof(hpu_ring_meta_t) ||
+                    total > r->capacity) {
+                    /* Unreachable for records written by lf_write_record
+                     * (the lease makes the header stable); make progress
+                     * defensively instead of wedging the cursor. */
+                    (void)lf_advance_deq(
+                        r, d, (uint32_t)lf_align8(sizeof(hpu_ring_meta_t)));
+                    continue;
+                }
+                if (HPU_REC_FLAGS(h->level_flags) & HPU_REC_FLAG_PAD) {
+                    (void)lf_advance_deq(r, d, total);
+                    continue; /* padding claimed and skipped */
+                }
+                if (staging == NULL || staging_len < total) {
+                    /* Contract violation (staging must hold any record,
+                     * REQUIRED in MPMC builds): release the lease and
+                     * keep the cursor in place, mirroring the
+                     * single-consumer behavior for a bad caller. */
+                    hpu_at_store_u64(&h->commit, d + 1, HPU_MO_RELEASE);
+                    continue;
+                }
+                /* Copy the record WITHOUT its commit word: the claim CAS
+                 * of a losing consumer targets exactly that word and
+                 * ThreadSanitizer models the failed RMW as a write, which
+                 * would flag the copy. The commit value itself is read
+                 * atomically; every other byte is lease-protected. */
+                ((hpu_ring_meta_t*)staging)->commit =
+                    hpu_at_load_u64(&h->commit, HPU_MO_RELAXED);
+                memcpy((char*)staging + sizeof(uint64_t),
+                       r->buf + off + sizeof(uint64_t),
+                       total - sizeof(uint64_t));
+                lf_view_from_staging(out, staging);
+                /* The lease holder is the only thread that can advance
+                 * deq from d, so this CAS cannot fail. */
+                (void)lf_advance_deq(r, d, total);
+                return HPU_RING_OK;
             }
 
             {

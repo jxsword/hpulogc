@@ -40,7 +40,7 @@ endfunction()
 # Ring test binary: compiles a SPECIFIC ring implementation together with
 # the platform object library, independent of HPULOGC_LOCKFREE.
 #   impl_name: locked | lockfree (picks the source file)
-#   impl_num / conc_num: numeric values baked into the test (0/1)
+#   impl_num / conc_num: numeric values baked into the test (0/1/2)
 function(hpu_add_ring_test name impl_name impl_num conc_num)
     add_executable(${name} unit/test_ring.c)
     target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -62,12 +62,20 @@ endfunction()
 # Unit tests
 # ---------------------------------------------------------------------------
 
-# Ring buffer: all 4 build combinations (impl x concurrency). Runtime tests
+# Ring buffer: all 6 build combinations (impl x concurrency). Runtime tests
 # cover the policies available for each combination.
 hpu_add_ring_test(test_ring_locked_spsc locked 0 0)
 hpu_add_ring_test(test_ring_locked_mpsc locked 0 1)
+hpu_add_ring_test(test_ring_locked_mpmc locked 0 2)
 hpu_add_ring_test(test_ring_lockfree_spsc lockfree 1 0)
 hpu_add_ring_test(test_ring_lockfree_mpsc lockfree 1 1)
+hpu_add_ring_test(test_ring_lockfree_mpmc lockfree 1 2)
+
+# MPMC end-to-end: only meaningful in MPMC builds (the multi-consumer
+# pipeline is compiled out otherwise).
+if(HPULOGC_CONCURRENCY_UC STREQUAL "MPMC")
+    hpu_add_test_binary(test_mpmc SRCS integration/test_mpmc.c)
+endif()
 
 # Atomic backends: same source compiled once per forced backend. Windows
 # has exactly one backend (Interlocked*, spec 4.3); POSIX tests the

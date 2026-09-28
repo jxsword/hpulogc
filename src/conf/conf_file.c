@@ -653,6 +653,10 @@ static int parse_async(conf_parser_t* ps, const char* key, char* value,
         c->shutdown_timeout_ms = (uint32_t)clamp_long(
             ps, line_no, strtol(value, NULL, 10), 0, 3600000,
             "shutdown timeout");
+    } else if (strcmp(key, "consumer threads") == 0) {
+        c->consumer_threads = (uint32_t)clamp_long(
+            ps, line_no, strtol(value, NULL, 10), 1, HPU_MAX_CONSUMERS,
+            "consumer threads");
     } else {
         goto unknown;
     }
@@ -952,6 +956,8 @@ static int parse_build(conf_parser_t* ps, const char* key, char* value,
     if (strcmp(key, "concurrency") == 0) {
 #if defined(HPULOGC_CONCURRENCY_SPSC)
         sval = "spsc";
+#elif defined(HPULOGC_CONCURRENCY_MPMC)
+        sval = "mpmc";
 #else
         sval = "mpsc";
 #endif
