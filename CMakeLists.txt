@@ -412,6 +412,7 @@ set(HPULOGC_CORE_SOURCES
     src/output/output_console.c
     src/output/output_file.c
     src/output/sink_null.c
+    src/output/sink_queue.c
     src/output/rotate.c
 )
 if(NOT WIN32)

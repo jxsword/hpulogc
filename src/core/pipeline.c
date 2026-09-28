@@ -395,6 +395,8 @@ int hpu_pipeline_process(const hpu_log_record_t* rec)
                               rec->field_count, ev_fields,
                               sizeof(ev_fields) / sizeof(ev_fields[0]));
         ev.fields = ev.field_count > 0 ? ev_fields : NULL;
+        ev.fields_wire = rec->fields_wire;
+        ev.fields_len = rec->fields_len;
 
         for (k = 0; k < out_count; k++) {
             size_t i = (size_t)out_idx[k];

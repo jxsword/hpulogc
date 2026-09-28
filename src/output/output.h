@@ -132,7 +132,8 @@ int hpu_parse_size_str(const char* s, unsigned long long* out);
  */
 hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
                                 size_t nkv, const char* name, int fsync_sev,
-                                int use_utc, int* err);
+                                int use_utc, uint32_t flush_interval_ms,
+                                size_t batch_max, int* err);
 
 /**
  * @brief Compatibility shim: create one sink instance from the deprecated
@@ -140,20 +141,23 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
  *        keys; behavior identical to v0.2).
  */
 hpu_output_t* hpu_output_open_flat(const hpulogc_output_t* cfg,
-                                   int effective_fsync, int use_utc);
+                                   int effective_fsync, int use_utc,
+                                   uint32_t flush_interval_ms,
+                                   size_t batch_max);
 
 /**
- * @brief flush + destroy an instance (close semantics; idempotent on NULL).
+ * @brief Wait for the async queue to drain (bounded), flush, run the
+ *        destroy callback and free the instance (idempotent on NULL).
+ * @param drain_timeout_ms  Bound for the async-queue drain wait (ms).
  */
-void hpu_output_close(hpu_output_t* o);
+void hpu_output_close(hpu_output_t* o, uint32_t drain_timeout_ms);
 
 /**
- * @brief Deliver one event to the sink (emit or queue, §4.10.6).
- *
- * Never fails to the caller; failures surface through the per-sink
- * `failed` statistic.
+ * @brief Deliver one event to the sink (emit inline or enqueue, §4.10.6).
+ * @return 0 delivered (emitted or enqueued), -1 dropped by a full async
+ *         queue (counted in the sink's `dropped` statistic).
  */
-void hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev);
+int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev);
 
 /**
  * @brief Flush buffered bytes (periodic fsync throttling included).

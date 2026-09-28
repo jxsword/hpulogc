@@ -5,6 +5,7 @@
  */
 
 #include "output.h"
+#include "sink_queue.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,7 +204,8 @@ static int parse_bool_str(const char* v)
 
 hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
                                 size_t nkv, const char* name, int fsync_sev,
-                                int use_utc, int* err)
+                                int use_utc, uint32_t flush_interval_ms,
+                                size_t batch_max, int* err)
 {
     const hpulogc_sink_ops_t* ops;
     hpu_output_base_t* b;
@@ -272,6 +274,14 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         }
     }
 
+    if (b->async && !(ops->caps & HPULOGC_CAP_ASYNC)) {
+        /* async=on on a type that does not declare the capability */
+        if (err != NULL) {
+            *err = HPULOGC_ERR_CONFIG;
+        }
+        free(b);
+        return NULL;
+    }
     if (ops->init != NULL &&
         ops->init((hpulogc_sink_t*)(void*)b) != 0) {
         if (err != NULL) {
@@ -291,6 +301,25 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         free(b);
         return NULL;
     }
+    if (b->async) {
+        /* Second-level queue + worker (§4.10.6); failure -> NO_MEM. */
+        if (b->queue_size == 0) {
+            b->queue_size = 256U * 1024U; /* defensive: default queue size */
+        }
+        if (hpu_sink_queue_create((hpu_sink_queue_t**)&b->queue,
+                                  (hpulogc_sink_t*)(void*)b, ops,
+                                  b->queue_size, flush_interval_ms,
+                                  batch_max) != 0) {
+            if (err != NULL) {
+                *err = HPULOGC_ERR_NO_MEM;
+            }
+            if (ops->destroy != NULL) {
+                ops->destroy((hpulogc_sink_t*)(void*)b);
+            }
+            free(b);
+            return NULL;
+        }
+    }
     return (hpu_output_t*)(void*)b;
 
 config_err:
@@ -304,12 +333,18 @@ config_err:
     return NULL;
 }
 
-void hpu_output_close(hpu_output_t* o)
+void hpu_output_close(hpu_output_t* o, uint32_t drain_timeout_ms)
 {
     hpu_output_base_t* b = (hpu_output_base_t*)(void*)o;
 
     if (o == NULL) {
         return;
+    }
+    if (b->queue != NULL) {
+        hpu_sink_queue_flush_wait((hpu_sink_queue_t*)b->queue,
+                                  drain_timeout_ms);
+        hpu_sink_queue_destroy((hpu_sink_queue_t*)b->queue);
+        b->queue = NULL;
     }
     (void)hpu_output_flush(o);
     if (b->ops->destroy != NULL) {
@@ -322,17 +357,27 @@ void hpu_output_close(hpu_output_t* o)
 /* Dispatch                                                            */
 /* ------------------------------------------------------------------ */
 
-void hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
+int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
 {
     hpu_output_base_t* b = (hpu_output_base_t*)(void*)o;
 
     if (o == NULL || ev == NULL || ev->line_len == 0 || !b->enabled) {
-        return;
+        return -1;
     }
-    b->ops->emit((hpulogc_sink_t*)(void*)o, ev);
+    if (b->queue != NULL) {
+        /* Async delivery: pack into the second-level queue; a full queue
+         * discards the event and counts the drop (D-S5). */
+        if (hpu_sink_queue_push((hpu_sink_queue_t*)b->queue, ev) != 0) {
+            hpu_at_fetch_add_u64(&b->st_dropped, 1, HPU_MO_RELAXED);
+            return -1;
+        }
+    } else {
+        b->ops->emit((hpulogc_sink_t*)(void*)o, ev);
+    }
     hpu_at_fetch_add_u64(&b->st_written, 1, HPU_MO_RELAXED);
     hpu_at_fetch_add_u64(&b->st_bytes, (uint64_t)ev->line_len,
                          HPU_MO_RELAXED);
+    return 0;
 }
 
 int hpu_output_flush(hpu_output_t* o)
@@ -442,7 +487,9 @@ void* hpulogc_sink_priv(hpulogc_sink_t* sink)
 /* ------------------------------------------------------------------ */
 
 hpu_output_t* hpu_output_open_flat(const hpulogc_output_t* cfg,
-                                   int effective_fsync, int use_utc)
+                                   int effective_fsync, int use_utc,
+                                   uint32_t flush_interval_ms,
+                                   size_t batch_max)
 {
     static const char* const rotate_names[] = { "none", "size", "time",
                                                 "both" };
@@ -508,7 +555,8 @@ hpu_output_t* hpu_output_open_flat(const hpulogc_output_t* cfg,
         return hpu_output_create(type, kvs, nkv, cfg->path != NULL
                                                      ? cfg->path
                                                      : "",
-                                 effective_fsync, use_utc, &err);
+                                 effective_fsync, use_utc, flush_interval_ms,
+                                 batch_max, &err);
     }
     type = "console";
     kvs[nkv].key = "stream";
@@ -520,6 +568,7 @@ hpu_output_t* hpu_output_open_flat(const hpulogc_output_t* cfg,
     o = hpu_output_create(type, kvs, nkv,
                           cfg->stream == 1 ? "console_stderr"
                                            : "console_stdout",
-                          effective_fsync, use_utc, &err);
+                          effective_fsync, use_utc, flush_interval_ms,
+                          batch_max, &err);
     return o;
 }

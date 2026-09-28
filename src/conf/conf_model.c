@@ -636,7 +636,8 @@ static int open_outputs(hpu_conf_t* c)
             continue; /* reused from the previous generation */
         }
         c->outputs[i].handle =
-            hpu_output_open_flat(&c->outputs[i].pub, sev, c->use_utc);
+            hpu_output_open_flat(&c->outputs[i].pub, sev, c->use_utc,
+                                 c->flush_interval_ms, c->batch_size);
         if (c->outputs[i].handle == NULL) {
             fprintf(stderr,
                     "hpulogc: init error: cannot open output '%s' (%s)\n",
@@ -810,7 +811,9 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
                 continue;
             }
             fo->handle =
-                hpu_output_open_flat(&fo->pub, sev, fresh->use_utc);
+                hpu_output_open_flat(&fo->pub, sev, fresh->use_utc,
+                                     fresh->flush_interval_ms,
+                                     fresh->batch_size);
             if (fo->handle == NULL) {
                 fprintf(stderr,
                         "hpulogc: reload error: cannot open output '%s' "
@@ -818,7 +821,8 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
                         fo->path_buf, strerror(errno));
                 while (opened_count > 0) {
                     hpu_output_close(
-                        fresh->outputs[opened[--opened_count]].handle);
+                        fresh->outputs[opened[--opened_count]].handle,
+                        fresh->shutdown_timeout_ms);
                     fresh->outputs[opened[opened_count]].handle = NULL;
                 }
                 return HPULOGC_ERR_IO;
@@ -838,7 +842,7 @@ void hpu_conf_close_outputs(hpu_conf_t* c)
     }
     for (i = 0; i < c->output_count; i++) {
         if (c->outputs[i].handle != NULL) {
-            hpu_output_close(c->outputs[i].handle);
+            hpu_output_close(c->outputs[i].handle, c->shutdown_timeout_ms);
             c->outputs[i].handle = NULL;
         }
     }

@@ -354,6 +354,9 @@ typedef struct hpulogc_event {
     size_t      line_len;          /*!< Rendered full line byte count */
     const hpulogc_field_t* fields; /*!< Structured fields view (may be NULL) */
     size_t      field_count;       /*!< Number of fields after budget trimming */
+    const uint8_t* fields_wire;    /*!< Wire-encoded field region (§4.11.4);
+                                    *   borrowed, valid like @p fields */
+    size_t      fields_len;        /*!< Wire region byte count */
 } hpulogc_event_t;
 
 /* ---- Sink contract (rd_v0.6 §4.10) ---- */

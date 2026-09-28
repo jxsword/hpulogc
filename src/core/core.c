@@ -15,6 +15,7 @@
  */
 
 #include "core_internal.h"
+#include "../output/sink_queue.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -797,13 +798,50 @@ void hpu_core_stop(void)
 /* Flush / sync                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief Wait for every async sink queue to drain (bounded, best effort).
+ *
+ * Called after the ring-side flush handshake so `hpulogc_flush()` covers
+ * the whole two-tier pipeline (§4.10.6).
+ */
+static void core_flush_sink_queues(uint32_t timeout_ms)
+{
+    size_t i;
+
+    hpu_mutex_lock(&g_rt.conf_lock);
+    for (i = 0; g_rt.conf != NULL && i < g_rt.conf->output_count; i++) {
+        hpu_output_t* o = g_rt.conf->outputs[i].handle;
+
+        if (o != NULL) {
+            hpu_output_base_t* b = hpu_sink_base((hpulogc_sink_t*)(void*)o);
+
+            if (b->queue != NULL) {
+                hpu_sink_queue_flush_wait((hpu_sink_queue_t*)b->queue,
+                                          timeout_ms);
+            }
+        }
+    }
+    hpu_mutex_unlock(&g_rt.conf_lock);
+}
+
 int hpulogc_flush(void)
 {
     if (g_rt.state != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
 #if HPULOGC_ENABLE_ASYNC
-    return hpu_consumer_flush() == 0 ? HPULOGC_OK : HPULOGC_ERR_IO;
+    {
+        int rc = hpu_consumer_flush();
+        uint32_t timeout_ms = 5000;
+
+        hpu_mutex_lock(&g_rt.conf_lock);
+        timeout_ms = g_rt.conf != NULL && g_rt.conf->shutdown_timeout_ms > 0
+                         ? g_rt.conf->shutdown_timeout_ms
+                         : 5000;
+        hpu_mutex_unlock(&g_rt.conf_lock);
+        core_flush_sink_queues(timeout_ms);
+        return rc == 0 ? HPULOGC_OK : HPULOGC_ERR_IO;
+    }
 #else
     {
         /* Sync builds: flush is best effort (spec 7.3 "尽量写出"). Write
@@ -836,6 +874,16 @@ int hpulogc_sync(void)
 #if HPULOGC_ENABLE_ASYNC
     if (hpu_consumer_flush() != 0) {
         rc = -1;
+    }
+    {
+        uint32_t timeout_ms = 5000;
+
+        hpu_mutex_lock(&g_rt.conf_lock);
+        timeout_ms = g_rt.conf != NULL && g_rt.conf->shutdown_timeout_ms > 0
+                         ? g_rt.conf->shutdown_timeout_ms
+                         : 5000;
+        hpu_mutex_unlock(&g_rt.conf_lock);
+        core_flush_sink_queues(timeout_ms);
     }
 #endif
     hpu_mutex_lock(&g_rt.conf_lock);

@@ -361,6 +361,8 @@ typedef struct hpulogc_event {
     /* 结构化字段（视图；仅回调内有效） */
     const hpulogc_field_t* fields;
     size_t      field_count;
+    const uint8_t* fields_wire;  /*!< 线格式字段区视图（§4.11.4） */
+    size_t      fields_len;      /*!< 线格式字节计数 */
 } hpulogc_event_t;
 ```
 
