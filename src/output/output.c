@@ -126,6 +126,9 @@ const hpulogc_sink_ops_t* hpu_sink_registry_find(const char* type)
     if (type == NULL) {
         return NULL;
     }
+    if (!g_registry_ready) {
+        hpu_sink_registry_init(); /* parse-time lookups precede create */
+    }
     for (i = 0; i < g_type_count; i++) {
         if (strcmp(g_types[i]->type, type) == 0) {
             return g_types[i];
@@ -525,8 +528,8 @@ hpu_output_t* hpu_output_open_from_conf(const struct hpu_conf_output* def,
     if (def->is_generic) {
         type = def->type_name;
         for (i = 0; i < def->kv_count; i++) {
-            kvs[nkv].key = def->kv_keys[i];
-            kvs[nkv].val = def->kv_vals[i];
+            kvs[nkv].key = def->kv_pool + def->kv_key_off[i];
+            kvs[nkv].val = def->kv_pool + def->kv_val_off[i];
             nkv++;
         }
     } else if (def->pub.type == HPULOGC_OUT_FILE) {

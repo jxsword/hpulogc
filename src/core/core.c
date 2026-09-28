@@ -455,6 +455,7 @@ int hpu_core_start(hpu_conf_t* c)
                      HPU_MO_RELAXED);
 
     if (hpu_pipeline_tls_init() != 0) {
+        fprintf(stderr, "[DBG] core_start: tls_init failed\n");
         goto fail;
     }
     /* fork(2) child handler (no-op on platforms without fork). */
@@ -463,9 +464,11 @@ int hpu_core_start(hpu_conf_t* c)
 #if HPULOGC_ENABLE_ASYNC
     g_rt.ring = hpu_ring_create(c->buffer_size, policy, ring_mode);
     if (g_rt.ring == NULL) {
+        fprintf(stderr, "[DBG] core_start: ring create failed\n");
         goto fail;
     }
     if (hpu_consumer_start() != 0) {
+        fprintf(stderr, "[DBG] core_start: consumer_start failed\n");
         hpu_ring_destroy(g_rt.ring);
         g_rt.ring = NULL;
         goto fail;
@@ -667,10 +670,13 @@ int hpulogc_init_from_file(const char* config_path)
     hpu_conf_t* c;
     int rc;
 
+    fprintf(stderr, "[DBG] init_from_file enter state=%d path=%s\n",
+            g_rt.state, config_path);
     if (config_path == NULL) {
         return HPULOGC_ERR_INVALID_ARG;
     }
     if (g_rt.state == HPU_RT_RUNNING || g_rt.state == HPU_RT_INITIALIZING) {
+        fprintf(stderr, "[DBG] init_from_file: STATE leak\n");
         return HPULOGC_ERR_STATE;
     }
     rt_zero();

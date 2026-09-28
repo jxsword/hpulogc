@@ -74,12 +74,12 @@ static int syslog_configure(hpulogc_sink_t* sink, const char* key,
     return -1; /* unknown key */
 }
 
-static int syslog_start(hpulogc_sink_t* sink)
+static int syslog_init(hpulogc_sink_t* sink)
 {
-    hpu_syslog_priv_t* p = hpulogc_sink_priv(sink);
     hpu_output_base_t* b = hpu_sink_base(sink);
 
-    /* Single-instance enforcement (§10.4). */
+    /* Single-instance enforcement (§10.4): init failure maps to
+     * HPULOGC_ERR_CONFIG (a config-level constraint). */
     if (hpu_at_fetch_add_u32(&g_syslog_instances, 1, HPU_MO_ACQ_REL) != 0) {
         fprintf(stderr,
                 "hpulogc: syslog sink '%s': only one syslog instance is "
@@ -87,6 +87,14 @@ static int syslog_start(hpulogc_sink_t* sink)
                 b->name);
         return -1;
     }
+    return 0;
+}
+
+static int syslog_start(hpulogc_sink_t* sink)
+{
+    hpu_syslog_priv_t* p = hpulogc_sink_priv(sink);
+    hpu_output_base_t* b = hpu_sink_base(sink);
+
     if (b->name[0] != '\0') {
         openlog(b->name, LOG_PID, p->facility);
     } else {
@@ -131,7 +139,7 @@ static const hpulogc_sink_ops_t g_syslog_ops = {
     HPULOGC_CAP_SYNC | HPULOGC_CAP_LINE_ATOMIC,
     sizeof(hpu_syslog_priv_t),
     syslog_configure,
-    NULL, /* init: no defaults beyond the facility */
+    syslog_init,
     syslog_start,
     syslog_emit,
     NULL, /* emit_batch */

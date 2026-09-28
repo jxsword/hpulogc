@@ -434,8 +434,26 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                         o->queue_size = (size_t)sz;
                         continue;
                     }
-                    o->kv_keys[o->kv_count] = d->keys[k];
-                    o->kv_vals[o->kv_count] = d->vals[k];
+                    {
+                        size_t klen = strlen(d->keys[k]);
+                        size_t vlen = strlen(d->vals[k]);
+
+                        if (o->kv_pool_len + klen + vlen + 2 >
+                            sizeof(o->kv_pool)) {
+                            fprintf(stderr,
+                                    "hpulogc: config error: sink "
+                                    "parameters too long\n");
+                            return HPULOGC_ERR_INVALID_ARG;
+                        }
+                        memcpy(o->kv_pool + o->kv_pool_len, d->keys[k],
+                               klen + 1);
+                        o->kv_key_off[o->kv_count] = o->kv_pool_len;
+                        o->kv_pool_len += klen + 1;
+                        memcpy(o->kv_pool + o->kv_pool_len, d->vals[k],
+                               vlen + 1);
+                        o->kv_val_off[o->kv_count] = o->kv_pool_len;
+                        o->kv_pool_len += vlen + 1;
+                    }
                     o->kv_count++;
                 }
             }
@@ -729,7 +747,15 @@ static int open_outputs(hpu_conf_t* c)
                                       &err_out);
         if (c->outputs[i].handle == NULL) {
             if (err_out == HPULOGC_ERR_CONFIG) {
-                /* configure/init rejection: unknown key or bad value */
+                if (!c->strict_init) {
+                    /* lenient: unknown key / bad value degrades to a
+                     * disabled sink (spec 10.1 unknown-key flow) */
+                    fprintf(stderr,
+                            "hpulogc: init error: invalid definition for "
+                            "output '%s' ignored (lenient)\n",
+                            c->outputs[i].name_buf);
+                    continue;
+                }
                 fprintf(stderr,
                         "hpulogc: init error: invalid definition for "
                         "output '%s'\n",

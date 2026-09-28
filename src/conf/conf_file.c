@@ -552,10 +552,10 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
                 return parse_fail(ps, line_no, "sink parameters too long");
             }
             memcpy(o->kv_pool + o->kv_pool_len, k, klen + 1);
-            o->kv_keys[o->kv_count] = o->kv_pool + o->kv_pool_len;
+            o->kv_key_off[o->kv_count] = o->kv_pool_len;
             o->kv_pool_len += klen + 1;
             memcpy(o->kv_pool + o->kv_pool_len, v, vlen + 1);
-            o->kv_vals[o->kv_count] = o->kv_pool + o->kv_pool_len;
+            o->kv_val_off[o->kv_count] = o->kv_pool_len;
             o->kv_pool_len += vlen + 1;
             o->kv_count++;
             continue;
@@ -1285,7 +1285,12 @@ int hpu_conf_load_file(hpu_conf_t* c, const char* path, int strict)
             } else {
                 c->outputs[i].pub.path = NULL;
             }
-            c->outputs[i].pub.rotate_naming = c->outputs[i].naming_buf;
+            if (c->outputs[i].is_generic) {
+                /* generic sinks carry no rotate naming (rd_v0.6 §4.7) */
+                c->outputs[i].pub.rotate_naming = NULL;
+            } else {
+                c->outputs[i].pub.rotate_naming = c->outputs[i].naming_buf;
+            }
         }
     }
     if (rc != 0) {

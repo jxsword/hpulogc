@@ -896,6 +896,8 @@ size_t hpu_fields_unpack(const uint8_t* wire, size_t len, uint16_t count,
             out[n].value.v.str.s = (const char*)wire + off + key_len;
             out[n].value.v.str.len = val_len;
         } else {
+            /* zero first: BOOL carries 1 wire byte into a wider int */
+            memset(&out[n].value.v, 0, sizeof(out[n].value.v));
             memcpy(&out[n].value.v, wire + off + key_len, val_len);
         }
         n++;

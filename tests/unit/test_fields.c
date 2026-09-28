@@ -87,7 +87,8 @@ TEST(fields_budget_key_and_str)
     size_t i;
     char kbuf[HPULOGC_MAX_FIELD_KEY_LEN + 8];
 
-    memset(longkey, 'k', sizeof(longkey));
+    memset(longkey, 'k', sizeof(longkey) - 1);
+    longkey[sizeof(longkey) - 1] = '\0'; /* NUL-terminated, len > KEY_MAX */
     memset(longstr, 'v', sizeof(longstr));
     in[0].key = longkey;                    /* oversized key: dropped */
     in[0].value.type = HPULOGC_FIELD_I64;

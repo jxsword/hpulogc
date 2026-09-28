@@ -57,8 +57,9 @@ typedef struct hpu_conf_output {
     /* Generic sink declaration (is_generic) + common keys (all shapes) */
     int    is_generic;                 /*!< Non-zero: use type_name + kv arrays */
     char   type_name[HPULOGC_MAX_NAME_LEN]; /*!< Registered sink type name */
-    const char* kv_keys[HPU_CONF_MAX_SINK_KV]; /*!< Private keys */
-    const char* kv_vals[HPU_CONF_MAX_SINK_KV]; /*!< Private values */
+    size_t kv_key_off[HPU_CONF_MAX_SINK_KV]; /*!< Key offsets into kv_pool
+                                  *   (offsets survive outputs realloc) */
+    size_t kv_val_off[HPU_CONF_MAX_SINK_KV]; /*!< Value offsets into kv_pool */
     size_t kv_count;                   /*!< Number of key/value pairs */
     char   kv_pool[HPU_CONF_SINK_KV_POOL]; /*!< Owned key/value bytes */
     size_t kv_pool_len;                /*!< Used pool bytes */
