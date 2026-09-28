@@ -182,6 +182,7 @@ static size_t sq_decode(const sq_worker_ctx_t* ctx, size_t off,
 {
     hpu_sink_queue_t* q = ctx->q;
     const uint8_t* base = q->buf;
+    const uint8_t* rd;
     uint32_t rec_len;
     uint16_t line_len, body_len, cat_len, file_len, func_len;
     uint16_t field_count, fields_len, src_line;
@@ -194,37 +195,37 @@ static size_t sq_decode(const sq_worker_ctx_t* ctx, size_t off,
     if (rec_len < SQ_HDR || off + rec_len > q->cap) {
         return 0;
     }
-    p = base + off + 4;
-    ev->level = *(int8_t*)(void*)p;
-    p += 4;
-    memcpy(&line_len, p, 2); p += 2;
-    memcpy(&body_len, p, 2); p += 2;
-    memcpy(&cat_len, p, 2);  p += 2;
-    memcpy(&file_len, p, 2); p += 2;
-    memcpy(&func_len, p, 2); p += 2;
-    memcpy(&field_count, p, 2); p += 2;
-    memcpy(&fields_len, p, 2); p += 2;
-    memcpy(&src_line, p, 2); p += 2;
-    p += 8; /* pad */
-    memcpy(&ev->realtime_ns, p, 8); p += 8;
-    memcpy(&ev->mono_us, p, 8); p += 8;
-    memcpy(&ev->tid, p, 8); p += 8;
+    rd = base + off + 4;
+    ev->level = *(const int8_t*)(const void*)rd;
+    rd += 4;
+    memcpy(&line_len, rd, 2); rd += 2;
+    memcpy(&body_len, rd, 2); rd += 2;
+    memcpy(&cat_len, rd, 2);  rd += 2;
+    memcpy(&file_len, rd, 2); rd += 2;
+    memcpy(&func_len, rd, 2); rd += 2;
+    memcpy(&field_count, rd, 2); rd += 2;
+    memcpy(&fields_len, rd, 2); rd += 2;
+    memcpy(&src_line, rd, 2); rd += 2;
+    rd += 8; /* pad */
+    memcpy(&ev->realtime_ns, rd, 8); rd += 8;
+    memcpy(&ev->mono_us, rd, 8); rd += 8;
+    memcpy(&ev->tid, rd, 8); rd += 8;
 
-    ev->line = (const char*)p; p += line_len;
+    ev->line = (const char*)rd; rd += line_len;
     ev->line_len = line_len;
-    ev->msg = (const char*)p; p += body_len;
+    ev->msg = (const char*)rd; rd += body_len;
     ev->msg_len = body_len;
-    ev->category = cat_len > 0 ? (const char*)p : NULL;
-    p += cat_len;
+    ev->category = cat_len > 0 ? (const char*)rd : NULL;
+    rd += cat_len;
     ev->category_len = cat_len;
-    ev->file = file_len > 0 ? (const char*)p : NULL;
-    p += file_len;
+    ev->file = file_len > 0 ? (const char*)rd : NULL;
+    rd += file_len;
     ev->file_len = file_len;
-    ev->func = func_len > 0 ? (const char*)p : NULL;
-    p += func_len;
+    ev->func = func_len > 0 ? (const char*)rd : NULL;
+    rd += func_len;
     ev->func_len = func_len;
     ev->src_line = src_line;
-    ev->fields_wire = fields_len > 0 ? p : NULL;
+    ev->fields_wire = fields_len > 0 ? rd : NULL;
     ev->fields_len = fields_len;
     ev->field_count = field_count;
     ev->field_count =
@@ -345,7 +346,7 @@ int hpu_sink_queue_create(hpu_sink_queue_t** out, hpulogc_sink_t* sink,
     ctx->ops = ops;
     ctx->flush_interval = flush_interval_ms > 0 ? flush_interval_ms : 100;
     ctx->last_flush_ms = (uint64_t)(hpu_now_ns() / 1000000ULL);
-    ctx->batch_max = capacity / SQ_HDR + 1;
+    ctx->batch_max = batch_max > 0 ? batch_max : capacity / SQ_HDR + 1;
     ctx->sweep = malloc(capacity);
     ctx->batch = calloc(ctx->batch_max, sizeof(*ctx->batch));
     ctx->evs = calloc(ctx->batch_max, sizeof(*ctx->evs));

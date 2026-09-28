@@ -126,6 +126,7 @@ static const hpulogc_sink_ops_t g_console_ops = {
     NULL, /* emit_batch: core loops emit */
     console_flush,
     NULL, /* sync: no fsync semantics */
+    NULL, /* periodic: no fsync bookkeeping */
     NULL, /* destroy: priv lives in the instance allocation */
     { NULL, NULL, NULL, NULL }
 };
