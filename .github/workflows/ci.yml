@@ -2,15 +2,17 @@
 # hpulogc CI (GitHub Actions)
 #
 # Platforms:
-#   - linux-smoke:   {gcc, clang} x {C99, C11} smoke matrix
-#   - macos-matrix:  {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
+#   - linux-smoke:   {gcc, clang} x {C99, C11} smoke matrix + 2 MPMC combos
+#                    (one locked, one lockfree)
+#   - macos-matrix:  {C99, C11} x {locked, lockfree} x {SPSC, MPSC, MPMC}
 #   - macos-presets: full / min / sync_thread / async_single
 #   - macos-asan:    ASan build + full ctest (zero reports required)
 #   - macos-arch:    x86_64 binaries under Rosetta on the arm64 runner
-#   - macos-tsan:    weekly schedule (or manual workflow_dispatch)
+#   - macos-tsan:    weekly schedule (or manual workflow_dispatch), default
+#                    build + lockfree MPMC combination
 #
 # All jobs reuse the existing CMake/CTest system (HPULOGC_* options); no
-# new test framework. The full 16-combination Linux matrix plus presets
+# new test framework. The full 24-combination Linux matrix plus presets
 # stays in scripts/run_matrix.sh (release gate). Docs-only changes skip
 # CI. Scheduled runs execute the TSan job only (spec 13.5: TSan nightly).
 # ============================================================================
@@ -36,12 +38,13 @@ on:
 
 jobs:
   # ------------------------------------------------------------------
-  # Linux smoke: compiler/standard dimensions. The full functional
-  # matrix stays in scripts/run_matrix.sh (release gate).
+  # Linux smoke: compiler/standard dimensions plus two MPMC combos (one
+  # locked, one lockfree — both ring implementations exercised). The full
+  # functional matrix stays in scripts/run_matrix.sh (release gate).
   # ------------------------------------------------------------------
   linux-smoke:
     if: github.event_name != 'schedule'
-    name: linux ${{ matrix.cc }} c${{ matrix.std }}
+    name: linux ${{ matrix.cc }} c${{ matrix.std }} ${{ matrix.lf }} ${{ matrix.conc }}
     # Pinned (not -latest): ubuntu-latest flips to Ubuntu 26 on
     # 2026-10-19 with unvetted compiler versions; runner upgrades are
     # deliberate changes here.
@@ -50,10 +53,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { cc: gcc,   std: 99 }
-          - { cc: gcc,   std: 11 }
-          - { cc: clang, std: 99 }
-          - { cc: clang, std: 11 }
+          - { cc: gcc,   std: 99,  lf: 'OFF', conc: MPSC }
+          - { cc: gcc,   std: 11,  lf: 'OFF', conc: MPSC }
+          - { cc: clang, std: 99,  lf: 'OFF', conc: MPSC }
+          - { cc: clang, std: 11,  lf: 'OFF', conc: MPSC }
+          - { cc: gcc,   std: 99,  lf: 'OFF', conc: MPMC }
+          - { cc: clang, std: 11,  lf: 'ON',  conc: MPMC }
     steps:
       - uses: actions/checkout@v5
       - name: Configure
@@ -61,6 +66,8 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_C_COMPILER=${{ matrix.cc }}
           -DHPULOGC_C_STANDARD=${{ matrix.std }}
+          -DHPULOGC_LOCKFREE=${{ matrix.lf }}
+          -DHPULOGC_CONCURRENCY=${{ matrix.conc }}
           -DHPULOGC_BUILD_SHARED=OFF
       - name: Build
         run: cmake --build build
@@ -83,7 +90,7 @@ jobs:
   # ------------------------------------------------------------------
   # macOS (Phase 3): Apple Silicon runner, Apple Clang. C99 uses the
   # __atomic_* backend, C11 uses <stdatomic.h> (auto-detected); both
-  # validated per combination.
+  # validated per combination. MPMC combos added in Phase 4 (rd_v0.3).
   # ------------------------------------------------------------------
   macos-matrix:
     if: github.event_name != 'schedule'
@@ -95,12 +102,16 @@ jobs:
         include:
           - { std: 99, lf: 'OFF', conc: SPSC }
           - { std: 99, lf: 'OFF', conc: MPSC }
+          - { std: 99, lf: 'OFF', conc: MPMC }
           - { std: 99, lf: 'ON',  conc: SPSC }
           - { std: 99, lf: 'ON',  conc: MPSC }
+          - { std: 99, lf: 'ON',  conc: MPMC }
           - { std: 11, lf: 'OFF', conc: SPSC }
           - { std: 11, lf: 'OFF', conc: MPSC }
+          - { std: 11, lf: 'OFF', conc: MPMC }
           - { std: 11, lf: 'ON',  conc: SPSC }
           - { std: 11, lf: 'ON',  conc: MPSC }
+          - { std: 11, lf: 'ON',  conc: MPMC }
     steps:
       - uses: actions/checkout@v5
       - name: Prepare toolchain
@@ -241,10 +252,20 @@ jobs:
 
   # TSan only on schedule / manual dispatch (fork tests excluded by the
   # build system under TSan; ring overwrite cases self-skip, decision 9).
+  # The lockfree-MPMC combination is included since Phase 4: its discard
+  # path is TSan-clean by construction (rd_v0.3 §5). Known pre-existing
+  # hot-reload races (implementation_notes Phase 4 §D) may fail the
+  # default-build entry independent of MPMC.
   macos-tsan:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: macos tsan (nightly)
+    name: macos tsan (nightly) ${{ matrix.tag }}
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { tag: locked-default, lf: 'OFF', conc: MPSC }
+          - { tag: lockfree-MPMC,  lf: 'ON',  conc: MPMC }
     steps:
       - uses: actions/checkout@v5
       - name: Prepare toolchain
@@ -254,6 +275,8 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_C_COMPILER=clang
           -DHPULOGC_SANITIZER=thread
+          -DHPULOGC_LOCKFREE=${{ matrix.lf }}
+          -DHPULOGC_CONCURRENCY=${{ matrix.conc }}
       - name: Build
         run: cmake --build build
       - name: Test

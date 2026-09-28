@@ -91,13 +91,14 @@ typedef struct hpu_runtime {
     hpu_atomic_u32   max_log_len_atomic; /*!< Producer render cap (bytes) */
     /* Async pipeline (HPULOGC_ENABLE_ASYNC builds only) */
     hpu_ring_t*      ring;             /*!< Ring buffer, NULL in sync builds */
-    hpu_thread_t     consumer_thread;  /*!< Consumer handle */
+    hpu_thread_t*    consumer_threads; /*!< Consumer handles (count below) */
+    uint32_t         consumer_count;   /*!< Number of consumer threads */
     hpu_mutex_t      consumer_mu;      /*!< Exit-wait mutex */
     hpu_cond_t       consumer_cond;    /*!< Exit-wait cond */
-    hpu_atomic_u32   consumer_exit;    /*!< Consumer stop request */
-    hpu_atomic_u32   consumer_alive;   /*!< Consumer running flag */
+    hpu_atomic_u32   consumer_exit;    /*!< Shared consumer stop request */
+    hpu_atomic_u32   consumer_alive;   /*!< Live consumer thread count */
     hpu_atomic_u64   flush_req;        /*!< Flush request counter */
-    hpu_atomic_u64   flush_done;       /*!< Last serviced flush counter */
+    hpu_atomic_u64*  flush_ack;        /*!< Per-consumer serviced counter */
     /* Hot reload (HPULOGC_ENABLE_HOT_RELOAD builds only) */
     hpu_watcher_t    watcher;          /*!< Platform watcher state */
     hpu_thread_t     watcher_thread;   /*!< Watcher thread handle */
@@ -288,19 +289,20 @@ int hpu_pipeline_selector_match(const char* rule_sel, const char* cat,
 /* ---- consumer.c (HPULOGC_ENABLE_ASYNC builds) ------------------------ */
 
 /**
- * @brief Start the consumer thread for the current runtime.
- * @return 0 on success, negative on failure.
+ * @brief Start the consumer threads for the current runtime (the count
+ *        comes from the configuration's consumer_threads value).
+ * @return 0 on success, negative on failure (all threads reaped).
  */
 int hpu_consumer_start(void);
 
 /**
- * @brief Request the consumer to stop; joins it (bounded by the shutdown
- *        timeout when the timeout is non-zero).
+ * @brief Request every consumer to stop; joins them (bounded by the
+ *        shutdown timeout when the timeout is non-zero).
  */
 void hpu_consumer_stop(void);
 
 /**
- * @brief Flush handshake: wait until the consumer submitted everything
+ * @brief Flush handshake: wait until every consumer submitted everything
  *        already enqueued.
  * @return 0 on success, -1 when not serviced in time.
  */

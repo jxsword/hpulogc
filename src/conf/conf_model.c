@@ -67,6 +67,7 @@ int hpu_conf_defaults(hpu_conf_t* c)
     c->batch_size = 64;
     c->flush_interval_ms = 100;
     c->shutdown_timeout_ms = 5000;
+    c->consumer_threads = 1;
 
     c->throttle.global_rate = 0;
     c->throttle.per_category_rate = 0;
@@ -359,6 +360,13 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     c->batch_size = cfg->batch_size;
     c->flush_interval_ms = cfg->flush_interval_ms;
     c->shutdown_timeout_ms = cfg->shutdown_timeout_ms;
+    if (cfg->consumer_threads < 1 ||
+        cfg->consumer_threads > HPU_MAX_CONSUMERS) {
+        fprintf(stderr,
+                "hpulogc: config error: consumer threads out of range\n");
+        return HPULOGC_ERR_INVALID_ARG;
+    }
+    c->consumer_threads = cfg->consumer_threads;
 
     /* advanced */
     c->escape_injection = cfg->escape_injection;
@@ -550,6 +558,33 @@ static int check_naming(hpu_conf_t* c)
 }
 
 /**
+ * @brief Reject consumer thread counts unsupported by this build
+ *        (spec rd_v0.3 1.3): more than one consumer requires the MPMC
+ *        concurrency build, and any consumer requires an async build.
+ * @return 0 or HPULOGC_ERR_CONFIG.
+ */
+static int check_consumer_threads(hpu_conf_t* c)
+{
+    if (c->consumer_threads <= 1) {
+        return 0;
+    }
+#if !HPULOGC_ENABLE_ASYNC
+    fprintf(stderr,
+            "hpulogc: config error: consumer threads > 1 requires an "
+            "async build\n");
+    return HPULOGC_ERR_CONFIG;
+#elif !defined(HPULOGC_CONCURRENCY_MPMC)
+    fprintf(stderr,
+            "hpulogc: config error: consumer threads > 1 requires the "
+            "MPMC concurrency build\n");
+    return HPULOGC_ERR_CONFIG;
+#else
+    (void)c;
+    return 0;
+#endif
+}
+
+/**
  * @brief Reject overflow policies unsupported by this build (spec 4.3).
  * @return 0 or HPULOGC_ERR_CONFIG.
  */
@@ -567,11 +602,11 @@ static int check_overflow_policy(hpu_conf_t* c)
                 "available in lock-free builds\n");
         return HPULOGC_ERR_CONFIG;
     }
-#if defined(HPULOGC_CONCURRENCY_MSPC)
+#if defined(HPULOGC_CONCURRENCY_MSPC) || defined(HPULOGC_CONCURRENCY_MPMC)
     if (c->overflow_policy == HPULOGC_OVERFLOW_OVERWRITE) {
         fprintf(stderr,
                 "hpulogc: config error: overflow policy 'overwrite' is not "
-                "available in lock-free MPSC builds\n");
+                "available in lock-free MPSC/MPMC builds\n");
         return HPULOGC_ERR_CONFIG;
     }
 #endif
@@ -625,6 +660,10 @@ int hpu_conf_finalize(hpu_conf_t* c)
         return HPULOGC_ERR_CONFIG;
     }
     rc = check_overflow_policy(c);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = check_consumer_threads(c);
     if (rc != 0) {
         return rc;
     }
@@ -683,6 +722,10 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
         return HPULOGC_ERR_CONFIG;
     }
     rc = check_overflow_policy(fresh);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = check_consumer_threads(fresh);
     if (rc != 0) {
         return rc;
     }

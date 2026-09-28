@@ -244,3 +244,26 @@ TEST(build_info_matches_build)
     CHECK(info.has_async == 0 || info.has_async == 1);
     hpulogc_get_build_info(NULL); /* safe ignore */
 }
+
+TEST(consumer_threads_gating)
+{
+    /* The [async] consumer threads key is validated in every build:
+     * range first, then build support (rd_v0.3 1.3). */
+    hpulogc_config_default(&g_cfg);
+    g_cfg.consumer_threads = 0;
+    CHECK_EQ(hpulogc_init(&g_cfg), HPULOGC_ERR_INVALID_ARG);
+
+    hpulogc_config_default(&g_cfg);
+    g_cfg.consumer_threads = 17;
+    CHECK_EQ(hpulogc_init(&g_cfg), HPULOGC_ERR_INVALID_ARG);
+
+    hpulogc_config_default(&g_cfg);
+    g_cfg.consumer_threads = 2;
+#if defined(HPULOGC_CONCURRENCY_MPMC)
+    CHECK_EQ(hpulogc_init(&g_cfg), HPULOGC_OK);
+    hpulogc_shutdown();
+#else
+    /* Value legal but unsupported by this build: fail fast (spec 10.4). */
+    CHECK_EQ(hpulogc_init(&g_cfg), HPULOGC_ERR_CONFIG);
+#endif
+}

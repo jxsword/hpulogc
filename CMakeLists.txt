@@ -67,7 +67,7 @@ option(HPULOGC_ENABLE_THROTTLE    "Rate limiting and sampling" OFF)
 option(HPULOGC_ENABLE_SOURCE_LOC  "Capture __FILE__/__LINE__" ON)
 option(HPULOGC_LOCKFREE           "Lock-free ring buffer (else locked)" OFF)
 set(HPULOGC_CONCURRENCY "MPSC" CACHE STRING
-    "Concurrency mode: SPSC | MPSC")
+    "Concurrency mode: SPSC | MPSC | MPMC")
 set(HPULOGC_COMPILE_TIME_LEVEL "TRACE" CACHE STRING
     "Compile-time trim threshold: TRACE|DEBUG|INFO|WARN|ERROR|FATAL|OFF")
 set(HPULOGC_C_STANDARD "99" CACHE STRING "C standard: 99 | 11")
@@ -100,8 +100,8 @@ endif()
 # Concurrency mode
 # ---------------------------------------------------------------------------
 string(TOUPPER "${HPULOGC_CONCURRENCY}" HPULOGC_CONCURRENCY_UC)
-if(NOT HPULOGC_CONCURRENCY_UC MATCHES "^(SPSC|MPSC)$")
-    message(FATAL_ERROR "HPULOGC_CONCURRENCY must be SPSC or MPSC")
+if(NOT HPULOGC_CONCURRENCY_UC MATCHES "^(SPSC|MPSC|MPMC)$")
+    message(FATAL_ERROR "HPULOGC_CONCURRENCY must be SPSC, MPSC or MPMC")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -272,6 +272,8 @@ if(HPU_PLATFORM STREQUAL "windows")
 endif()
 if(HPULOGC_CONCURRENCY_UC STREQUAL "SPSC")
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_SPSC=1)
+elseif(HPULOGC_CONCURRENCY_UC STREQUAL "MPMC")
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_MPMC=1)
 else()
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_MSPC=1)
 endif()

@@ -20,10 +20,10 @@ hpulogc/
 │   ├── ring/
 │   │   ├── ringbuf.h             环形缓冲内部契约：记录布局（48B 头）、
 │   │   │                         put/get/close/counters API、view 结构
-│   │   ├── ringbuf_locked.c      有锁实现（mutex+cond；SPSC/MPSC；
+│   │   ├── ringbuf_locked.c      有锁实现（mutex+cond；SPSC/MPSC/MPMC；
 │   │   │                         discard/overwrite/wait 全策略）
 │   │   └── ringbuf_lockfree.c    无锁实现（CAS 预订 + commit 标记发布；
-│   │                             MPSC 仅 discard；SPSC 另支持 overwrite）
+│   │                             无锁 MPSC/MPMC 仅 discard；SPSC 另支持 overwrite）
 │   ├── platform/
 │   │   ├── platform.h            契约伞头（含公共头引入容量宏）
 │   │   ├── hpu_sync.h            mutex/cond 契约（有锁环依赖）
@@ -156,7 +156,7 @@ hpulogc/
 │       └── bench_memory.c        min 基线内存（statm + mallinfo2）
 ├── scripts/
 │   ├── run_matrix.sh             16 组合矩阵 + 4 预设一键验证（POSIX）
-│   ├── run_matrix.ps1            Phase 2：{99,11}×{锁,无锁}×{SPSC,MPSC}
+│   ├── run_matrix.ps1            Phase 2：{99,11}×{锁,无锁}×{SPSC,MPSC,MPMC}
 │   │                             8 组合 + 4 预设（MSVC，零告警门禁）
 │   ├── msvc_build.bat            Phase 2：MSVC 环境包装（vcvars64）
 │   └── msvc_env.sh               Phase 2：Git Bash 环境变量参考
@@ -224,7 +224,7 @@ dllexport/dllimport），不属平台层。
 | HPULOGC_ENABLE_THROTTLE | OFF | 限流与采样 |
 | HPULOGC_ENABLE_SOURCE_LOC | ON | __FILE__/__LINE__ 捕获 |
 | HPULOGC_LOCKFREE | OFF | 环形缓冲实现二选一 |
-| HPULOGC_CONCURRENCY | MPSC | SPSC / MPSC |
+| HPULOGC_CONCURRENCY | MPSC | SPSC / MPSC / MPMC（rd_v0.3） |
 | HPULOGC_COMPILE_TIME_LEVEL | TRACE | 便捷宏裁剪阈值（0..6，PUBLIC 宏传播给使用者） |
 
 ### 构建控制

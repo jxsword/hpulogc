@@ -4,7 +4,7 @@
 # Sibling of ci.yml: validates the Windows platform layer under MSVC on
 # GitHub-hosted runners. Job parameters mirror the locally-validated
 # scripts/run_matrix.ps1 (spec 13.5 Windows matrix):
-#   - msvc-matrix:   {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
+#   - msvc-matrix:   {C99, C11} x {locked, lockfree} x {SPSC, MPSC, MPMC}
 #   - msvc-presets:  full / min / sync_thread / async_single
 #   - msvc-asan:     /fsanitize=address build + full ctest
 #
@@ -36,9 +36,9 @@ on:
 
 jobs:
   # ------------------------------------------------------------------
-  # Functional matrix (spec 13.5): 8 combinations. The shared library is
-  # built too (default), covering the HPULOGC_BUILDING_DLL export path
-  # on every combination — mirrors run_matrix.ps1.
+  # Functional matrix (spec 13.5; MPMC per rd_v0.3): 12 combinations. The
+  # shared library is built too (default), covering the HPULOGC_BUILDING_DLL
+  # export path on every combination — mirrors run_matrix.ps1.
   # ------------------------------------------------------------------
   msvc-matrix:
     name: msvc c${{ matrix.std }} ${{ matrix.lf }} ${{ matrix.conc }}
@@ -49,12 +49,16 @@ jobs:
         include:
           - { std: 99, lf: 'OFF', conc: SPSC }
           - { std: 99, lf: 'OFF', conc: MPSC }
+          - { std: 99, lf: 'OFF', conc: MPMC }
           - { std: 99, lf: 'ON',  conc: SPSC }
           - { std: 99, lf: 'ON',  conc: MPSC }
+          - { std: 99, lf: 'ON',  conc: MPMC }
           - { std: 11, lf: 'OFF', conc: SPSC }
           - { std: 11, lf: 'OFF', conc: MPSC }
+          - { std: 11, lf: 'OFF', conc: MPMC }
           - { std: 11, lf: 'ON',  conc: SPSC }
           - { std: 11, lf: 'ON',  conc: MPSC }
+          - { std: 11, lf: 'ON',  conc: MPMC }
     steps:
       - uses: actions/checkout@v5
       - name: Configure

@@ -5,7 +5,7 @@
 
 纯 C99/C11、零第三方依赖、跨平台的高性能日志库（Linux / Windows / macOS）。
 
-- **无锁环形缓冲**（SPSC/MPSC，discard/overwrite 溢出策略）与有锁实现二选一
+- **无锁环形缓冲**（SPSC/MPSC/MPMC，discard/overwrite 溢出策略）与有锁实现二选一；MPMC 支持 N 个消费者线程（rd_v0.3）
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
 - **INI 配置**（zlog 兼容词法）+ 热加载（inotify/SIGHUP/轮询）+ 原子替换回滚
 - **路由规则**（类目选择器 × 级别范围）、5 个内置格式 + 自定义命名格式
@@ -120,19 +120,62 @@ cmake --build build && ctest --test-dir build
 -DHPULOGC_BUILD_PRESET=min          # 嵌入式精简版（无配置文件/轮转/颜色）
 -DHPULOGC_BUILD_PRESET=async_single # 无锁 SPSC 高吞吐版
 -DHPULOGC_LOCKFREE=ON               # 无锁环形缓冲
--DHPULOGC_CONCURRENCY=SPSC          # 单生产者模式
+-DHPULOGC_CONCURRENCY=SPSC          # 单生产者单消费者
+-DHPULOGC_CONCURRENCY=MPSC          # 多生产者单消费者（默认）
+-DHPULOGC_CONCURRENCY=MPMC          # 多生产者多消费者（Phase 4，见下节）
 -DHPULOGC_C_STANDARD=11             # C11（默认 99）
 -DHPULOGC_ATOMIC_BACKEND=gcc-atomic # 强制原子后端
 -DHPULOGC_SANITIZER=address         # address / thread / undefined / address,undefined
 ```
 
+> 并发模式与是否无锁均为**编译期选择**，不可运行时更改；取值非法时
+> CMake 配置期直接报错。
+
+### MPMC 并发模式（Phase 4）
+
+多个生产者线程 + N 个消费者线程共同消费同一环形缓冲，每条日志恰好被
+一个消费者处理一次（不丢失、不重复，受溢出策略约束）：
+
+```bash
+cmake -S . -B build -G Ninja -DHPULOGC_CONCURRENCY=MPMC
+```
+
+代码内配置消费者数量：
+
+```c
+hpulogc_config_t cfg;
+hpulogc_config_default(&cfg);
+cfg.consumer_threads = 4;   /* 1~16，默认 1；仅 init 生效，热加载忽略 */
+hpulogc_init(&cfg);
+```
+
+或 INI 配置文件：
+
+```ini
+[async]
+consumer threads = 4
+```
+
+约束（完整规范见 `docs/rd_v0.3.md`）：
+
+- 非法值：代码内配置 `0` 或 `> 16` 时 init 返回
+  `HPULOGC_ERR_INVALID_ARG`；INI 值越界按惯例钳制到 1~16 并输出警告；
+  非 MPMC 构建配置 `> 1` 时 init 返回 `HPULOGC_ERR_CONFIG`（值合法但
+  构建不支持）；默认 1 保证配置文件跨构建可移植；
+- 溢出策略可用性：有锁构建（SPSC/MPSC/MPMC）三种策略全支持；无锁
+  MPMC 仅 `discard`（`overwrite`/`wait` 启动失败）；
+- **顺序保证**：MPMC 不保证记录间全局输出顺序（每条记录自身原子
+  完整）；依赖全局顺序的场景请使用 SPSC/MPSC 构建；
+- 统计恒等式与单消费者构建一致；`hpulogc_build_info_t.concurrency`
+  返回 `"mpmc"`。
+
 全矩阵验证：
 
 ```bash
-# Linux / macOS（GCC/Clang × C99/C11 × 有锁/无锁 × SPSC/MPSC + 4 预设）
+# Linux / macOS（GCC/Clang × C99/C11 × 有锁/无锁 × SPSC/MPSC/MPMC + 4 预设）
 bash scripts/run_matrix.sh
 
-# Windows MSVC（C99/C11 × 有锁/无锁 × SPSC/MPSC + 4 预设，含零告警门禁）
+# Windows MSVC（C99/C11 × 有锁/无锁 × SPSC/MPSC/MPMC + 4 预设，含零告警门禁）
 powershell -ExecutionPolicy Bypass -File scripts\run_matrix.ps1
 ```
 
@@ -150,8 +193,10 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 ## 文档
 
 - 需求规格：`docs/rd_v0.2.md`（规范性）
+- MPMC 增量规格（Phase 4）：`docs/rd_v0.3.md`
 - 代码结构与平台契约：`docs/code_structure.md`
-- 实现决策记录：`docs/implementation_notes.md`（含 Phase 2 Windows 章节）
+- 实现决策记录：`docs/implementation_notes.md`（含 Phase 2 Windows、
+  Phase 4 MPMC 章节）
 - 性能测试报告：`docs/perf_report.md`（Phase 1 / Linux）、
   `docs/perf_report_windows.md`（Phase 2 / Windows）
 

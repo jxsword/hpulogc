@@ -21,6 +21,9 @@
 #define HPU_ID_FMT_HEX     1
 #define HPU_ID_FMT_NONE    2
 
+/** @brief Upper bound for consumer threads ([async] consumer threads). */
+#define HPU_MAX_CONSUMERS 16
+
 /** @brief Throttle parameters ([throttle] section / throttle build). */
 typedef struct hpu_throttle_cfg {
     long   global_rate;      /*!< Global token rate (logs/sec), 0 = off */
@@ -91,6 +94,8 @@ typedef struct hpu_conf {
     uint32_t batch_size;
     uint32_t flush_interval_ms;
     uint32_t shutdown_timeout_ms;
+    uint32_t consumer_threads;  /*!< Consumer threads (1..HPU_MAX_CONSUMERS);
+                                 *   values > 1 require an MPMC build. */
     /* [throttle] */
     hpu_throttle_cfg_t throttle;
     /* [advanced] */

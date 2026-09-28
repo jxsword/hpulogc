@@ -3,9 +3,11 @@
  * @brief Locked ring buffer (HPULOGC_LOCKFREE=OFF, default).
  *
  * Platform mutex + condition variables (contract in src/platform/) protect
- * a byte ring of contiguous records. Supports SPSC and MPSC (the mutex
- * serializes producers) and all three overflow policies: discard,
- * overwrite (oldest unconsumed record removed by the producer) and wait.
+ * a byte ring of contiguous records. Supports SPSC, MPSC and MPMC (the
+ * mutex serializes producers and consumers alike, so concurrent hpu_ring_get
+ * callers each claim a record atomically) and all three overflow policies:
+ * discard, overwrite (oldest unconsumed record removed by the producer)
+ * and wait.
  */
 
 #include "ringbuf.h"
@@ -30,7 +32,8 @@ struct hpu_ring {
     size_t      capacity;     /*!< Ring size in bytes (multiple of 8) */
     char*       buf;          /*!< Ring storage */
     int         policy;       /*!< One of RB_POL_* */
-    int         spsc;         /*!< Build concurrency (unused by this impl) */
+    int         mode;         /*!< One of enum hpu_ring_mode (informational:
+                               *   the mutex serializes every operation) */
     hpu_mutex_t mu;           /*!< Protects all fields below */
     hpu_cond_t  not_empty;    /*!< Signaled after a record is appended */
     hpu_cond_t  not_full;     /*!< Signaled after space is freed */
@@ -161,7 +164,7 @@ static uint32_t read_record(const hpu_ring_t* r, size_t pos,
     return meta->total_len;
 }
 
-hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int spsc)
+hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int mode)
 {
     hpu_ring_t* r;
 
@@ -175,7 +178,7 @@ hpu_ring_t* hpu_ring_create(size_t capacity_bytes, int policy, int spsc)
     }
     r->capacity = align8(capacity_bytes);
     r->policy   = policy;
-    r->spsc     = spsc;
+    r->mode     = mode;
     r->buf      = malloc(r->capacity);
     if (r->buf == NULL) {
         free(r);

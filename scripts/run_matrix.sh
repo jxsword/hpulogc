@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================================
-# hpulogc Phase 1 verification matrix (spec 13.5 / task 11)
+# hpulogc verification matrix (spec 13.5 / task 11; MPMC per rd_v0.3)
 #
-# Runs {GCC, Clang} x {C99, C11} x {locked, lockfree} x {SPSC, MPSC}
-# (16 combinations) plus the four build presets, building and running the
+# Runs {GCC, Clang} x {C99, C11} x {locked, lockfree} x {SPSC, MPSC, MPMC}
+# (24 combinations) plus the four build presets, building and running the
 # full CTest suite for each.
 #
 # Usage: scripts/run_matrix.sh [quick]
@@ -50,12 +50,12 @@ run_combo() {
     pass_count=$((pass_count + 1))
 }
 
-echo "==== functional matrix: {gcc,clang} x {99,11} x {locked,lockfree} x {SPSC,MPSC} ===="
+echo "==== functional matrix: {gcc,clang} x {99,11} x {locked,lockfree} x {SPSC,MPSC,MPMC} ===="
 
 for compiler in gcc clang; do
     for std in 99 11; do
         for lockfree in OFF ON; do
-            for conc in SPSC MPSC; do
+            for conc in SPSC MPSC MPMC; do
                 name="${compiler}_c${std}_$( [ "$lockfree" = ON ] && echo lf || echo lk )_${conc}"
                 run_combo "${name}" \
                     -DCMAKE_C_COMPILER="${compiler}" \
