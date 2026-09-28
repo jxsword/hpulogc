@@ -855,7 +855,9 @@ HPULOGC_API void hpulogc_log_signal_safe(hpulogc_level_t level, const char* msg)
 #endif
 
 /* Variadic macro portability (see spec 7.3): prefer GNU ##__VA_ARGS__,
- * then MSVC traditional auto-comma swallowing, then __VA_OPT__, and
+ * then MSVC traditional auto-comma swallowing, then __VA_OPT__ (MSVC
+ * conformant preprocessor and C23; VS2026 makes the conformant
+ * preprocessor the default and defines _MSVC_TRADITIONAL to 0), and
  * finally strict C99 (requires at least one variadic argument). */
 #if defined(__GNUC__) || defined(__clang__)
 #  define HPULOGC_VA_ARGS(fmt, ...) fmt, ##__VA_ARGS__
@@ -863,7 +865,8 @@ HPULOGC_API void hpulogc_log_signal_safe(hpulogc_level_t level, const char* msg)
 #elif defined(_MSC_VER) && (!defined(_MSVC_TRADITIONAL) || _MSVC_TRADITIONAL)
 #  define HPULOGC_VA_ARGS(fmt, ...) fmt, __VA_ARGS__
 #  define HPULOGC_HAS_VA_ARGS 1
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
+#elif defined(_MSC_VER) || \
+      (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L)
 #  define HPULOGC_VA_ARGS(fmt, ...) fmt __VA_OPT__(,) __VA_ARGS__
 #  define HPULOGC_HAS_VA_ARGS 1
 #else
