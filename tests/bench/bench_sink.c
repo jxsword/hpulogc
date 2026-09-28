@@ -43,9 +43,20 @@
  * @param count    Filled with the number of sinks.
  * @return         0 on success, -1 on an unknown scenario.
  */
+static const char* const bench_sink_names[8] = {
+    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"
+};
+
+static char bench_keybuf[8][4][32];
+static char bench_valbuf[8][4][512];
+static const char* bench_keys[8][4];
+static const char* bench_vals[8][4];
+
+/**
+ * @brief Build the sink declarations for a scenario (file scenarios bind
+ *        the path key/value into scenario-owned scratch storage).
+ */
 static int build_sinks(int sc, hpulogc_sink_decl_t* sinks,
-                       const char** keys[8], const char** vals[8],
-                       char (*keybuf)[32], char (*valbuf)[512],
                        const char* logpath, size_t* count)
 {
     int i;
@@ -63,7 +74,7 @@ static int build_sinks(int sc, hpulogc_sink_decl_t* sinks,
     case 2: /* null8 */
         *count = (size_t)(sc == 1 ? 4 : 8);
         for (i = 0; i < (int)*count; i++) {
-            snprintf(sinks[i].name, HPULOGC_MAX_NAME_LEN, "s%d", i);
+            sinks[i].name = bench_sink_names[i];
             sinks[i].type = "null";
             sinks[i].keys = NULL;
             sinks[i].vals = NULL;
@@ -72,60 +83,31 @@ static int build_sinks(int sc, hpulogc_sink_decl_t* sinks,
         return 0;
     case 3: /* file (sync) */
     case 4: /* file_async */
-        snprintf(keybuf[0], 32, "path");
-        snprintf(valbuf[0], 512, "%s", logpath);
+        snprintf(bench_keybuf[sc][0], 32, "path");
+        snprintf(bench_valbuf[sc][0], 512, "%s", logpath);
+        bench_keys[sc][0] = bench_keybuf[sc][0];
+        bench_vals[sc][0] = bench_valbuf[sc][0];
         sinks[0].name = "s0";
         sinks[0].type = "rollingfile";
-        sinks[0].keys = keys[0];
-        sinks[0].vals = vals[0];
+        sinks[0].keys = bench_keys[sc];
+        sinks[0].vals = bench_vals[sc];
         sinks[0].count = 1;
         if (sc == 4) {
-            snprintf(keybuf[1], 32, "async");
-            snprintf(valbuf[1], 512, "on");
-            snprintf(keybuf[2], 32, "queue size");
-            snprintf(valbuf[2], 512, "4mb");
-            sinks[0].keys = keys[0];
-            sinks[0].vals = vals[0];
-            sinks[0].count = 1;
+            snprintf(bench_keybuf[sc][1], 32, "async");
+            snprintf(bench_valbuf[sc][1], 512, "on");
+            snprintf(bench_keybuf[sc][2], 32, "queue size");
+            snprintf(bench_valbuf[sc][2], 512, "4mb");
+            bench_keys[sc][1] = bench_keybuf[sc][1];
+            bench_vals[sc][1] = bench_valbuf[sc][1];
+            bench_keys[sc][2] = bench_keybuf[sc][2];
+            bench_vals[sc][2] = bench_valbuf[sc][2];
+            sinks[0].count = 3;
         }
         *count = 1;
         return 0;
     default:
         return -1;
     }
-}
-
-/**
- * @brief Wire the common keys into the scenario's sink declarations.
- *
- * The async/queue-size keys for scenario 4 are appended into dedicated
- * scratch arrays (decls borrow the pointers until init returns).
- */
-static int build_sinks_full(int sc, hpulogc_sink_decl_t* sinks,
-                            const char* logpath, size_t* count)
-{
-    static char keybuf[8][32];
-    static char valbuf[8][512];
-    static const char* keys[8][4];
-    static const char* vals[8][4];
-    int i;
-    int rc = build_sinks(sc, sinks, (const char***)keys,
-                         (const char***)vals, keybuf, valbuf, logpath, count);
-
-    for (i = 0; i < (int)*count; i++) {
-        if (sc == 4 && i == 0) {
-            keys[i][0] = keybuf[0];
-            vals[i][0] = valbuf[0];
-            keys[i][1] = keybuf[1];
-            vals[i][1] = valbuf[1];
-            keys[i][2] = keybuf[2];
-            vals[i][2] = valbuf[2];
-            sinks[i].keys = keys[i];
-            sinks[i].vals = vals[i];
-            sinks[i].count = 3;
-        }
-    }
-    return rc;
 }
 
 /**
@@ -136,9 +118,9 @@ static int scenario_init(int sc, hpulogc_sink_decl_t* sinks,
 {
     hpulogc_config_t cfg;
     static const char* names[8];
-    size_t i;
+    int i;
     int n;
-    int rc = build_sinks_full(sc, sinks, logpath, count);
+    int rc = build_sinks(sc, sinks, logpath, count);
 
     if (rc != 0) {
         return rc;
@@ -226,7 +208,12 @@ static void run_throughput(int sc, int seconds)
         HPULOGC_INFO("bench", "warmup %d", i);
     }
     (void)hpulogc_flush();
-    CHECK_EQ(hpulogc_get_stats(&st), HPULOGC_OK);
+    if (hpulogc_get_stats(&st) != HPULOGC_OK) {
+        printf("  %s: STATS FAILED\n", scenario_name(sc));
+        hpulogc_shutdown();
+        remove(logpath);
+        return;
+    }
     accepted0 = st.accepted;
     t0 = bench_now_ns();
     i = 0;
@@ -242,7 +229,11 @@ static void run_throughput(int sc, int seconds)
         }
     }
     (void)hpulogc_flush();
-    CHECK_EQ(hpulogc_get_stats(&st), HPULOGC_OK);
+    if (hpulogc_get_stats(&st) != HPULOGC_OK) {
+        hpulogc_shutdown();
+        remove(logpath);
+        return;
+    }
     printf("  %s seconds=%d accepted=%llu -> %.0f logs/sec\n",
            scenario_name(sc), seconds, st.accepted - accepted0,
            (double)(st.accepted - accepted0) /

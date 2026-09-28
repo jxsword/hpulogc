@@ -127,7 +127,7 @@ hpu_add_test_binary(test_diskfail SRCS integration/test_diskfail.c)
 # ---------------------------------------------------------------------------
 # Benchmarks (spec 13.3): independent build targets, NOT in default ctest.
 # ---------------------------------------------------------------------------
-foreach(bench_name bench_log bench_memory)
+foreach(bench_name bench_log bench_sink bench_memory)
     add_executable(${bench_name} EXCLUDE_FROM_ALL bench/${bench_name}.c)
     target_include_directories(${bench_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src
