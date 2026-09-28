@@ -2,10 +2,10 @@
  * @file posix_watcher.c
  * @brief Generic POSIX watcher: uses the poll fallback backend.
  *
- * Compiled for POSIX platforms without a native notification mechanism
- * (macOS Phase 3). On Linux, linux_watcher.c provides the public symbols
- * with an inotify backend instead and this file is excluded from the
- * build.
+ * Compiled for POSIX platforms without a native notification mechanism.
+ * On Linux, linux_watcher.c provides the public symbols with an inotify
+ * backend instead; on macOS, darwin_watcher.c provides them with a
+ * kqueue backend. Both exclude this file from the build.
  */
 
 #include "platform/platform.h"

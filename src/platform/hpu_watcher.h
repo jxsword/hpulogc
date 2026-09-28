@@ -2,10 +2,11 @@
  * @file hpu_watcher.h
  * @brief Platform contract: configuration file change watcher.
  *
- * Linux uses inotify when available and falls back to polling
- * (mtime + size) at the configured interval; the choice is made at start
- * time by the platform implementation. Windows/macOS will always poll
- * (Phase 2/3).
+ * Linux uses inotify and macOS uses kqueue (EVFILT_VNODE); each falls
+ * back to polling (mtime + size) when the native mechanism cannot be
+ * initialized. The choice is made at start time by the platform
+ * implementation. Windows polls (no VNODE-style contract notification
+ * is used for the config file).
  */
 
 #ifndef HPU_WATCHER_H
@@ -21,6 +22,10 @@ typedef struct hpu_watcher {
     int  watch_fd;        /*!< Inner watch descriptor (inotify wd, -1 when unused) */
     char path[512];       /*!< Watched file path (poll fallback + dir watch) */
     int  use_inotify;     /*!< Non-zero when the inotify backend is active */
+    int  use_kqueue;      /*!< Non-zero when the kqueue backend is active
+                               (macOS EVFILT_VNODE; poll fallback when 0) */
+    int  vnode_dead;      /*!< kqueue: watched vnode was deleted/renamed
+                               away; re-armed on the next wait */
     int  dir_watch_fd;    /*!< Parent directory watch (rename-over detection) */
     uint64_t last_mtime_ns; /*!< Poll fallback: last modification time */
     int64_t  last_size;     /*!< Poll fallback: last file size */

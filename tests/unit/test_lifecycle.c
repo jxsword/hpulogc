@@ -242,6 +242,11 @@ TEST(build_info_matches_build)
     CHECK(info.build_version != NULL);
     CHECK(info.concurrency != NULL);
     CHECK(info.has_async == 0 || info.has_async == 1);
+    /* console/rollingfile are not trimmable (rd_v0.6 §4.7.4): the list
+     * always contains both; syslog/null depend on HPULOGC_SINKS. */
+    CHECK(info.sinks != NULL);
+    CHECK(strstr(info.sinks, "console") != NULL);
+    CHECK(strstr(info.sinks, "rollingfile") != NULL);
     hpulogc_get_build_info(NULL); /* safe ignore */
 }
 

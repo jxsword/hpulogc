@@ -180,7 +180,7 @@ hpulogc/
 | hpu_time.h | 单调/实时时钟、civil 时间转换 | QPC / GetSystemTimePreciseAsFileTime / localtime_s | 复用 posix 层（≥10.12） |
 | hpu_fs.h | open/write-all/fsync/rename/unlink/stat/mkdir_all/isatty/symlink/list_dir/fchmod | CreateFile/WriteFile/FlushFileBuffers/MoveFileEx/FindFirstFile | 复用 posix 层 |
 | hpu_path.h | dirname/basename/stem/normalize（词法） | '\' 语义 + UTF-8↔UTF-16 | 复用 posix 层 |
-| hpu_watcher.h | 文件变更等待（后端自选 + 轮询回退） | 恒轮询 | kqueue 或轮询 |
+| hpu_watcher.h | 文件变更等待（后端自选 + 轮询回退） | 恒轮询 | kqueue（已实现）+ 轮询回退 |
 | hpu_tid.h | 数值线程 id | GetCurrentThreadId | pthread_threadid_np |
 | hpu_tls.h | 带析构的 TLS 槽 | TlsAlloc 族 | 复用 posix 层 |
 | hpu_signal.h | SIGHUP 安装 + 原子取清 | 无（恒 -1） | 复用 posix 层 |
@@ -204,8 +204,9 @@ dllexport/dllimport），不属平台层。
   验证（GitHub Actions 矩阵，见 implementation_notes.md Phase 3
   章节 E）——`darwin_sync.c`（macOS condattr 仅支持 REALTIME，
   timedwait 改 relative_np）与 `darwin_tid.c`
-  （pthread_threadid_np）；watcher 按 §16.3 选择轮询回退（kqueue
-  为可选增强，遗留）；其余复用 posix 层。Apple Clang 双标准
+  （pthread_threadid_np）；watcher 按 §16.3 实现 kqueue
+  （EVFILT_VNODE）后端（darwin_watcher.c，轮询回退）；其余复用
+  posix 层。Apple Clang 双标准
   （C11 stdatomic / C99 __atomic_*）、双架构（arm64/x86_64-
   Rosetta）与 ASan 均在 CI 矩阵中实测通过。
 

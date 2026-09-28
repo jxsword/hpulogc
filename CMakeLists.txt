@@ -359,11 +359,12 @@ elseif(HPU_PLATFORM STREQUAL "darwin")
     # macOS (Phase 3): reuses the POSIX shared layer with two darwin
     # replacements - darwin_sync (macOS pthread_condattr_setclock only
     # supports CLOCK_REALTIME; relative timed waits are used instead)
-    # and darwin_tid (pthread_threadid_np). The watcher stays on the
-    # poll fallback backend (kqueue is a future enhancement).
+    # and darwin_tid (pthread_threadid_np). The watcher uses the kqueue
+    # (EVFILT_VNODE) backend with the shared poll fallback.
     list(APPEND HPULOGC_PLATFORM_SOURCES
         src/platform/darwin/darwin_sync.c
         src/platform/darwin/darwin_tid.c
+        src/platform/darwin/darwin_watcher.c
         src/platform/posix/posix_thread.c
         src/platform/posix/posix_time.c
         src/platform/posix/posix_fs.c
@@ -371,7 +372,6 @@ elseif(HPU_PLATFORM STREQUAL "darwin")
         src/platform/posix/posix_tls.c
         src/platform/posix/posix_signal.c
         src/platform/posix/posix_watcher_poll.c
-        src/platform/posix/posix_watcher.c
     )
 else()
     list(APPEND HPULOGC_PLATFORM_SOURCES

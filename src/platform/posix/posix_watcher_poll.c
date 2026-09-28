@@ -52,11 +52,13 @@ static void poll_sleep_ms(uint32_t ms)
 }
 
 /**
- * @brief Snapshot the current mtime/size of the watched file.
+ * @brief Compare the watched file against the mtime/size baseline
+ *        (shared with the kqueue backend; see posix_watcher_poll.h).
  * @param w  Watcher handle.
- * @return   0 when the file is readable, -1 otherwise.
+ * @return   1 when the file changed relative to the baseline, 0 when
+ *           unchanged.
  */
-static int poll_snapshot(hpu_watcher_t* w)
+int hpu_poll_snapshot(hpu_watcher_t* w)
 {
     struct stat st;
 
@@ -99,7 +101,7 @@ int hpu_poll_watcher_start(hpu_watcher_t* w, const char* path)
     w->primed = 0;
     w->last_size = 0;
     w->last_mtime_ns = 0;
-    poll_snapshot(w); /* establish the baseline; missing file is fine */
+    hpu_poll_snapshot(w); /* establish the baseline; missing file is fine */
     return 0;
 }
 
@@ -110,7 +112,7 @@ int hpu_poll_watcher_wait(hpu_watcher_t* w, uint32_t timeout_ms)
                                       : 200U;
 
     for (;;) {
-        int changed = poll_snapshot(w);
+        int changed = hpu_poll_snapshot(w);
         if (changed > 0) {
             return 1;
         }
