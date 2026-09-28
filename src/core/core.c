@@ -304,7 +304,7 @@ void hpu_core_sleep_ms(uint32_t ms)
  */
 static void hpu_atfork_child(void)
 {
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return;
     }
     g_rt.fork_child = 1;
@@ -370,11 +370,11 @@ static int fork_rebuild(void)
         return -1;
     }
     g_rt.conf = c;
-    g_rt.state = HPU_RT_RUNNING;
+    hpu_rt_state_store(HPU_RT_RUNNING);
     if (hpu_core_start(c) != 0) {
         /* hpu_core_start tore the snapshot down on failure */
         g_rt.conf = NULL;
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return -1;
     }
     return 0;
@@ -455,7 +455,7 @@ int hpu_core_start(hpu_conf_t* c)
                      HPU_MO_RELAXED);
 
     if (hpu_pipeline_tls_init() != 0) {
-        fprintf(stderr, "[DBG] core_start: tls_init failed\n");
+        fprintf(stderr, "hpulogc: init failed: render TLS setup error\n");
         goto fail;
     }
     /* fork(2) child handler (no-op on platforms without fork). */
@@ -464,11 +464,11 @@ int hpu_core_start(hpu_conf_t* c)
 #if HPULOGC_ENABLE_ASYNC
     g_rt.ring = hpu_ring_create(c->buffer_size, policy, ring_mode);
     if (g_rt.ring == NULL) {
-        fprintf(stderr, "[DBG] core_start: ring create failed\n");
+        fprintf(stderr, "hpulogc: init failed: ring buffer allocation error\n");
         goto fail;
     }
     if (hpu_consumer_start() != 0) {
-        fprintf(stderr, "[DBG] core_start: consumer_start failed\n");
+        fprintf(stderr, "hpulogc: init failed: consumer start error\n");
         hpu_ring_destroy(g_rt.ring);
         g_rt.ring = NULL;
         goto fail;
@@ -521,7 +521,7 @@ int hpu_core_start(hpu_conf_t* c)
     }
 
     hpu_sink_registry_freeze(); /* no sink registration after init */
-    g_rt.state = HPU_RT_RUNNING;
+    hpu_rt_state_store(HPU_RT_RUNNING);
     return 0;
 
 fail:
@@ -529,7 +529,7 @@ fail:
     hpu_conf_free(c);
     free(c);
     g_rt.conf = NULL;
-    g_rt.state = HPU_RT_UNINITIALIZED;
+    hpu_rt_state_store(HPU_RT_UNINITIALIZED);
     return -1;
 }
 
@@ -604,25 +604,25 @@ int hpulogc_init(const hpulogc_config_t* cfg)
 {
     int rc;
 
-    if (g_rt.state == HPU_RT_RUNNING || g_rt.state == HPU_RT_INITIALIZING) {
+    if (hpu_rt_state_load() == HPU_RT_RUNNING || hpu_rt_state_load() == HPU_RT_INITIALIZING) {
         return HPULOGC_ERR_STATE;
     }
     if (cfg == NULL) {
         return hpulogc_init_default();
     }
     rt_zero();
-    g_rt.state = HPU_RT_INITIALIZING;
+    hpu_rt_state_store(HPU_RT_INITIALIZING);
 
     rc = saved_cfg_copy(&g_saved_cfg, cfg);
     if (rc != 0) {
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
 
     rc = init_from_code(cfg);
     if (rc != 0) {
         saved_cfg_free(&g_saved_cfg);
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     return 0;
@@ -633,33 +633,33 @@ int hpulogc_init_default(void)
     hpu_conf_t* c;
     int rc;
 
-    if (g_rt.state == HPU_RT_RUNNING || g_rt.state == HPU_RT_INITIALIZING) {
+    if (hpu_rt_state_load() == HPU_RT_RUNNING || hpu_rt_state_load() == HPU_RT_INITIALIZING) {
         return HPULOGC_ERR_STATE;
     }
     rt_zero();
-    g_rt.state = HPU_RT_INITIALIZING;
+    hpu_rt_state_store(HPU_RT_INITIALIZING);
 
     c = malloc(sizeof(*c));
     if (c == NULL) {
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return HPULOGC_ERR_NO_MEM;
     }
     rc = hpu_conf_defaults(c);
     if (rc != 0) {
         free(c);
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     rc = conf_add_default_console(c);
     if (rc != 0) {
         hpu_conf_free(c);
         free(c);
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     rc = init_common(c, NULL);
     if (rc != 0) {
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     return 0;
@@ -670,47 +670,44 @@ int hpulogc_init_from_file(const char* config_path)
     hpu_conf_t* c;
     int rc;
 
-    fprintf(stderr, "[DBG] init_from_file enter state=%d path=%s\n",
-            g_rt.state, config_path);
     if (config_path == NULL) {
         return HPULOGC_ERR_INVALID_ARG;
     }
-    if (g_rt.state == HPU_RT_RUNNING || g_rt.state == HPU_RT_INITIALIZING) {
-        fprintf(stderr, "[DBG] init_from_file: STATE leak\n");
+    if (hpu_rt_state_load() == HPU_RT_RUNNING || hpu_rt_state_load() == HPU_RT_INITIALIZING) {
         return HPULOGC_ERR_STATE;
     }
     rt_zero();
-    g_rt.state = HPU_RT_INITIALIZING;
+    hpu_rt_state_store(HPU_RT_INITIALIZING);
 
 #if !HPULOGC_ENABLE_INI
     (void)c;
     (void)rc;
     fprintf(stderr,
             "hpulogc: init_from_file: INI support is not compiled in\n");
-    g_rt.state = HPU_RT_UNINITIALIZED;
+    hpu_rt_state_store(HPU_RT_UNINITIALIZED);
     return HPULOGC_ERR_CONFIG;
 #else
     c = malloc(sizeof(*c));
     if (c == NULL) {
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return HPULOGC_ERR_NO_MEM;
     }
     rc = hpu_conf_defaults(c);
     if (rc != 0) {
         free(c);
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     rc = hpu_conf_load_file(c, config_path, -1);
     if (rc != 0) {
         hpu_conf_free(c);
         free(c);
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     rc = init_common(c, config_path);
     if (rc != 0) {
-        g_rt.state = HPU_RT_UNINITIALIZED;
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED);
         return rc;
     }
     return 0;
@@ -750,16 +747,16 @@ void hpulogc_config_default(hpulogc_config_t* cfg)
 
 void hpulogc_shutdown(void)
 {
-    if (g_rt.state != HPU_RT_RUNNING) {
-        g_rt.state = HPU_RT_UNINITIALIZED; /* idempotent */
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
+        hpu_rt_state_store(HPU_RT_UNINITIALIZED); /* idempotent */
         return;
     }
-    g_rt.state = HPU_RT_SHUTDOWN;
+    hpu_rt_state_store(HPU_RT_SHUTDOWN);
     hpu_core_stop();
     saved_cfg_free(&g_saved_cfg);
     hpu_mutex_destroy(&g_rt.conf_lock);
     hpu_registry_shutdown();
-    g_rt.state = HPU_RT_UNINITIALIZED;
+    hpu_rt_state_store(HPU_RT_UNINITIALIZED);
     rt_zero();
 }
 
@@ -770,6 +767,18 @@ void hpu_core_stop(void)
 
 #if HPULOGC_ENABLE_HOT_RELOAD
     hpu_hotreload_stop();
+    /* The watcher is joined above, but an explicit trigger from an
+     * application thread may still be in flight (defect P-2): wait,
+     * bounded by the trigger's own 5 s slot deadline, before tearing
+     * down the pipeline and the conf snapshot it may be reading. */
+    {
+        uint64_t deadline = hpu_now_ns() / 1000000ULL + 6000;
+
+        while (hpu_hotreload_busy() &&
+               hpu_now_ns() / 1000000ULL < deadline) {
+            hpu_core_sleep_ms(2);
+        }
+    }
 #endif
 #if HPULOGC_ENABLE_ASYNC
     if (g_rt.ring != NULL) {
@@ -784,11 +793,16 @@ void hpu_core_stop(void)
 #endif
 
     hpu_core_retire_output_lost();
+    /* Free the active snapshot under the conf lock (defect P-2): hot
+     * reload readers take the same lock to snapshot the pointer, and
+     * the in-flight reload was drained above. */
+    hpu_mutex_lock(&g_rt.conf_lock);
     if (g_rt.conf != NULL) {
         hpu_conf_free(g_rt.conf);
         free(g_rt.conf);
         g_rt.conf = NULL;
     }
+    hpu_mutex_unlock(&g_rt.conf_lock);
     if (g_rt.signal_reload_installed) {
         g_rt.signal_reload_installed = 0;
         /* The SIGHUP handler stays installed; restoring SIG_DFL here
@@ -832,7 +846,7 @@ static void core_flush_sink_queues(uint32_t timeout_ms)
 
 int hpulogc_flush(void)
 {
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
 #if HPULOGC_ENABLE_ASYNC
@@ -874,7 +888,7 @@ int hpulogc_sync(void)
     int rc = 0;
     size_t i;
 
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
 #if HPULOGC_ENABLE_ASYNC
@@ -909,7 +923,7 @@ int hpulogc_sync(void)
 
 int hpulogc_set_level(hpulogc_level_t level)
 {
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
     if (level < HPULOGC_LEVEL_TRACE || level > HPULOGC_LEVEL_OFF) {
@@ -932,7 +946,7 @@ int hpulogc_set_level_for_category(const char* category,
     (void)level;
     return HPULOGC_ERR_CONFIG;
 #else
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
     if (category == NULL) {
@@ -981,7 +995,7 @@ int hpulogc_get_sink_stats(const char* name, hpulogc_sink_stats_t* stats)
     if (stats == NULL || name == NULL) {
         return HPULOGC_ERR_INVALID_ARG;
     }
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
     hpu_mutex_lock(&g_rt.conf_lock);
@@ -1007,7 +1021,7 @@ int hpulogc_get_stats(hpulogc_stats_t* stats)
     if (stats == NULL) {
         return HPULOGC_ERR_INVALID_ARG;
     }
-    if (g_rt.state != HPU_RT_RUNNING) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return HPULOGC_ERR_STATE;
     }
 

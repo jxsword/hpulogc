@@ -195,3 +195,29 @@
 - **理由**：append-only ABI 规则允许追加字段；垫片使迁移期平滑；通用声明
   是「后续更容易扩展更多 sink」的承载点。
 - **影响**：`hpulogc_config_t` 追加字段；conf 垫片映射；废弃标注。
+
+## D-R1 热加载预存竞争（P-1/P-2）的修复策略（2026-09-28，独立缺陷工单）
+- 背景：TSan 周任务自 Phase 4 起 `test_pipeline` 稳定报告两处数据竞争
+  （state 普通读写、g_rt.conf 无锁读），main 的 schedule CI 因此持续
+  标红；且排查确认 P-2 的并发对手是 shutdown 的 conf 释放（无锁），
+  显式触发 reload 与 shutdown 并发时为 UAF 级风险，非仅 TSan 可见性。
+- 选项：
+  - A. TSan 抑制（注解/拦截器豁免）——改动最小 / 掩盖真实 UAF 风险、
+    抑制规则随访问点漂移易失效、与仓库"先例仅用于良性重同步读"的
+    豁免纪律相悖 / 代价：技术债持续存在
+  - B. 仅加锁不改 shutdown——把 conf 读取入临界区即闭合 TSan 报告 /
+    显式触发与 shutdown 并发时仍可能使用已释放快照（shutdown 不等
+    reload） / 代价：修复不完整
+  - C. state 原子化 + conf 指针临界区快照 + shutdown 等待在途 reload
+    并持锁释放（选中）——语义显式化、竞争与 UAF 一并闭合、TSan 可
+    建模 / 改动面稍大（全仓 ~40 处 state 访问点、机械替换）/ 代价：
+    触碰核心生命周期路径，需全矩阵回归
+- 结论：C。
+- 理由：P-2 实为 UAF 而非纯可见性问题，抑制或半修都不诚实；A 违背
+  仓库对 TSan 豁免的既有纪律（仅限良性重同步读，决策 4/9 先例）；
+  B 留下真实的释放-使用窗口。C 的机械替换经 24 组合矩阵 + 双 TSan
+  配置 + ASan/UBSan 全绿验证，风险可控。
+- 影响：`core_internal.h`（state 字段与 load/store 辅助）、`core.c`
+  （全访问点、stop 等待 busy、持锁释放 conf、清理误留 [DBG] 打印）、
+  `hotreload.c`（入口快照 + 状态复核 + busy 访问器）；TSan nightly
+  从此无预期内失败。同工单记录：顺手清理的 [DBG] 为 8b91072 误留。

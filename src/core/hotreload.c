@@ -24,6 +24,11 @@
 /** @brief Reload serialization flag (watcher thread vs explicit trigger). */
 static hpu_atomic_u32 g_reload_busy;
 
+int hpu_hotreload_busy(void)
+{
+    return hpu_at_load_u32(&g_reload_busy, HPU_MO_ACQUIRE) != 0;
+}
+
 /**
  * @brief Claim the reload slot, queueing behind an in-flight reload
  *        (decision 34).
@@ -45,7 +50,7 @@ static int reload_try_enter(void)
                            HPU_MO_ACQUIRE)) {
             return 1;
         }
-        if (g_rt.state != HPU_RT_RUNNING ||
+        if (hpu_rt_state_load() != HPU_RT_RUNNING ||
             hpu_now_ns() / 1000000ULL >= deadline) {
             return 0;
         }
@@ -71,12 +76,13 @@ int hpu_core_trigger_reload(void)
 {
     hpu_conf_t* fresh;
     hpu_conf_t* old;
+    hpu_conf_t* live; /* Snapshot of g_rt.conf taken under the conf lock */
     int reuse_old_idx[HPULOGC_MAX_OUTPUTS];
     int strict;
     int rc;
     size_t i;
 
-    if (g_rt.state != HPU_RT_RUNNING || g_rt.conf == NULL) {
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
         return -1;
     }
     if (g_rt.source_path[0] == '\0') {
@@ -97,14 +103,27 @@ int hpu_core_trigger_reload(void)
         return -1;
     }
 
+    /* Phase 1 works on a conf snapshot pointer taken under the conf lock
+     * (defect P-2): the pointer exchange itself is exclusive (the busy
+     * flag excludes concurrent reloads), but shutdown frees the active
+     * snapshot, so the previous unlocked g_rt.conf reads here raced with
+     * the shutdown store. */
     hpu_mutex_lock(&g_rt.conf_lock);
-    strict = g_rt.conf != NULL ? g_rt.conf->strict_init : 1;
+    if (hpu_rt_state_load() != HPU_RT_RUNNING || g_rt.conf == NULL) {
+        hpu_mutex_unlock(&g_rt.conf_lock);
+        hpu_conf_free(fresh);
+        free(fresh);
+        hpu_at_store_u32(&g_reload_busy, 0, HPU_MO_RELEASE);
+        return -1;
+    }
+    strict = g_rt.conf->strict_init;
+    live = g_rt.conf;
     hpu_mutex_unlock(&g_rt.conf_lock);
 
     /* Phase 1: parse + validate the new snapshot (fail -> keep old). */
     rc = hpu_conf_load_file(fresh, g_rt.source_path, strict);
     if (rc == 0) {
-        rc = hpu_conf_finalize_reload(fresh, g_rt.conf, reuse_old_idx);
+        rc = hpu_conf_finalize_reload(fresh, live, reuse_old_idx);
     }
     if (rc != 0) {
         fprintf(stderr,
@@ -118,14 +137,14 @@ int hpu_core_trigger_reload(void)
     }
 
     /* [buffer] changes are ignored (init-time only, spec 10.5). */
-    if (fresh->buffer_size != g_rt.conf->buffer_size ||
-        fresh->overflow_policy != g_rt.conf->overflow_policy) {
+    if (fresh->buffer_size != live->buffer_size ||
+        fresh->overflow_policy != live->overflow_policy) {
         fprintf(stderr,
                 "hpulogc: reload: [buffer] changes are ignored (buffer is "
                 "fixed at init)\n");
     }
     /* Consumer count is init-time only as well (rd_v0.3 1.3). */
-    if (fresh->consumer_threads != g_rt.conf->consumer_threads) {
+    if (fresh->consumer_threads != live->consumer_threads) {
         fprintf(stderr,
                 "hpulogc: reload: [async] consumer threads changes are "
                 "ignored (fixed at init)\n");

@@ -529,14 +529,19 @@ TSan（Linux，lockfree 构建）下 `test_pipeline` 报告两处数据竞争，
 
 | # | 位置 | 竞争 | 说明 |
 |---|------|------|------|
-| P-1 | `src/core/core.c` / `hpu_runtime_t.state` | watcher 线程在 `hpu_core_trigger_reload` 入口读取 `g_rt.state`（普通 int） vs init/shutdown 线程的普通写 | `state` 的"普通 int read-mostly"是 Phase 1 文档化设计（core.c 头注释；§7.5 不承诺 init/shutdown 与其他 API 并发），TSan 无法建模该约定 |
-| P-2 | `src/core/hotreload.c` Phase 1 解析路径 | `hpu_conf_finalize_reload(fresh, g_rt.conf, ...)` 在**未持 conf_lock** 的情况下读取 `g_rt.conf` 指针，与换代写（持锁）构成指针大小竞争 | 修复方向：读指针入临界区或改为原子指针；因涉及热加载关键路径，留独立缺陷工单，不在 MPMC PR 内夹带 |
+| P-1 | `src/core/core.c` / `hpu_runtime_t.state`（**已修复**，独立工单 PR） | watcher 线程在 `hpu_core_trigger_reload` 入口读取 `g_rt.state`（普通 int） vs init/shutdown 线程的普通写 | **修复**：`state` 字段原子化（`hpu_atomic_u32`），全仓访问点改经 `hpu_rt_state_load/store` 内联辅助（acquire/release）；`state` 实际被生产者/消费者/watcher 线程无锁轮询，原"普通 int read-mostly"约定对 TSan 不可建模，原子化后语义不变且 Happens-before 显式化 |
+| P-2 | `src/core/hotreload.c` Phase 1 解析路径（**已修复**，独立工单 PR） | `hpu_conf_finalize_reload(fresh, g_rt.conf, ...)` 在**未持 conf_lock** 的情况下读取 `g_rt.conf` 指针，与换代写（持锁）构成指针大小竞争 | **修复（三件套）**：① reload 入口在 conf_lock 内快照 `g_rt.conf` 到局部 `live` 并复核 state（Phase 1 全程改用局部指针）；② shutdown 的 conf 释放改持 conf_lock；③ `hpu_core_stop` 在 join watcher 后、拆管线前有界等待 `hpu_hotreload_busy()` 清零（上限 6 s，覆盖显式触发自身的 5 s 槽位期限），显式触发与 shutdown 并发时不再可能读到已释放快照（原缺陷实为 UAF 级，非仅 TSan 可见性） |
 | P-3 | `src/core/core.c` init 路径（**已在本阶段修复**） | `fork behavior`（spec 9，配置文件专属键）从未从配置快照复制到 `g_rt.fork_behavior`：全代码仅代码配置路径硬编码 `HPU_FORK_REINIT`，文件配置的 `disable` 实际按 `reinit` 执行（子进程重建+重启消费者）。`fork_disable_child_drops` 一直靠"子进程 `_exit` 前输出缓冲未被刷出"的时序运气通过；macOS runner 的调度差异使该运气失效（`c11 OFF MPSC`、`x86_64 lockfree-SPSC` 两组合首轮 CI 失败） | 修复：`init_common` 统一 `g_rt.fork_behavior = c->fork_behavior`（三条 init 路径共用；代码配置经 defaults 仍为 reinit，行为不变），删除冗余硬编码；本地两个构建 fork 测试确定性通过 |
 
-影响：TSan 定时任务中 `test_pipeline` 以退出码 66 失败（TSan 惯例
+影响：TSan 定时任务中 `test_pipeline` 曾以退出码 66 失败（TSan 惯例
 exitcode=66）。该失败在 main 上即存在；MPMC 组合加入 TSan 矩阵不改
 变其状态。MPMC 自身新增路径（ring 租约认领、多消费者 core/flush/
 shutdown）经上述 C 节验证为 TSan 干净。
+
+**后续（独立工单，已合并）**：P-1/P-2 修复后 `test_pipeline` 在 TSan
+下（默认构建与 lockfree-MPMC 组合）连续多次运行零竞争报告，TSan
+nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` stderr
+调试打印（8b91072 引入）。
 
 | P-4 | `src/ring/ringbuf_lockfree.c` MPMC 过期游标重同步读（**部分已修**） | 消费者游标过期（deq 已前进且环回绕）时，lf_wait_commit 的 commit 读取与生产者对同一物理位置的重写构成 TSan 可见竞争；若负载字节伪造 commit 匹配，租约 CAS 会以垃圾 total_len 推进 deq（真实正确性风险，非仅良性） | **修复（本阶段）**：lf_wait_commit 将 deq==d 新鲜度检查前置到 commit 读取之前；MPMC 认领 CAS 前再次校验 deq==d。deq==d 时生产者不可能写该物理槽位（空间检查 pos+len ≤ deq+cap 对同槽位重写恒假），且 deq 跳过 d 必须先取得 d 的租约（互斥），故「新鲜度检查 + 认领 CAS」对重用窗口封闭。修复后 correctness 封闭；残余的**良性重同步读**（检查与读取之间的极端 TOCTOU 窗口，值必被门禁丢弃）TSan 仍无法建模——`ring_stress_mpmc_discard_pressure` 在 TSan 下自跳过（同决策 4/9 先例），其余 MPMC 用例 TSan 零竞争 |
 
