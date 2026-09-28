@@ -531,8 +531,12 @@ TSan（Linux，lockfree 构建）下 `test_pipeline` 报告两处数据竞争，
 |---|------|------|------|
 | P-1 | `src/core/core.c` / `hpu_runtime_t.state` | watcher 线程在 `hpu_core_trigger_reload` 入口读取 `g_rt.state`（普通 int） vs init/shutdown 线程的普通写 | `state` 的"普通 int read-mostly"是 Phase 1 文档化设计（core.c 头注释；§7.5 不承诺 init/shutdown 与其他 API 并发），TSan 无法建模该约定 |
 | P-2 | `src/core/hotreload.c` Phase 1 解析路径 | `hpu_conf_finalize_reload(fresh, g_rt.conf, ...)` 在**未持 conf_lock** 的情况下读取 `g_rt.conf` 指针，与换代写（持锁）构成指针大小竞争 | 修复方向：读指针入临界区或改为原子指针；因涉及热加载关键路径，留独立缺陷工单，不在 MPMC PR 内夹带 |
+| P-3 | `src/core/core.c` init 路径（**已在本阶段修复**） | `fork behavior`（spec 9，配置文件专属键）从未从配置快照复制到 `g_rt.fork_behavior`：全代码仅代码配置路径硬编码 `HPU_FORK_REINIT`，文件配置的 `disable` 实际按 `reinit` 执行（子进程重建+重启消费者）。`fork_disable_child_drops` 一直靠"子进程 `_exit` 前输出缓冲未被刷出"的时序运气通过；macOS runner 的调度差异使该运气失效（`c11 OFF MPSC`、`x86_64 lockfree-SPSC` 两组合首轮 CI 失败） | 修复：`init_common` 统一 `g_rt.fork_behavior = c->fork_behavior`（三条 init 路径共用；代码配置经 defaults 仍为 reinit，行为不变），删除冗余硬编码；本地两个构建 fork 测试确定性通过 |
 
 影响：TSan 定时任务中 `test_pipeline` 以退出码 66 失败（TSan 惯例
 exitcode=66）。该失败在 main 上即存在；MPMC 组合加入 TSan 矩阵不改
 变其状态。MPMC 自身新增路径（ring 租约认领、多消费者 core/flush/
 shutdown）经上述 C 节验证为 TSan 干净。
+
+另：首轮 PR CI 的 macOS 两组合失败（`fork_disable_child_drops`）即为
+上表 P-3 暴露，修复后复跑通过（详见 §E）。

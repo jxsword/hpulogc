@@ -417,6 +417,12 @@ static int init_common(hpu_conf_t* c, const char* source_path)
         return HPULOGC_ERR_NO_MEM;
     }
 
+    /* fork behavior is a config-file-only key (spec 9): honor the value
+     * of the active snapshot on every init path (Phase 4 defect P-3:
+     * previously only the code-config default was stored, so a file
+     * config's 'disable' silently behaved as 'reinit'). */
+    g_rt.fork_behavior = c->fork_behavior;
+
     if (hpu_core_start(c) != 0) {
         hpu_mutex_destroy(&g_rt.conf_lock);
         hpu_registry_shutdown();
@@ -607,7 +613,6 @@ int hpulogc_init(const hpulogc_config_t* cfg)
         g_rt.state = HPU_RT_UNINITIALIZED;
         return rc;
     }
-    g_rt.fork_behavior = HPU_FORK_REINIT; /* default; file-only key */
 
     rc = init_from_code(cfg);
     if (rc != 0) {
