@@ -270,6 +270,13 @@ if(HPU_PLATFORM STREQUAL "windows")
     # Keep the Win32 umbrella header from polluting library TUs.
     list(APPEND HPULOGC_PRIVATE_DEFINES WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
+# Built-in sink whitelist (rd_v0.6 §4.7.4): syslog is POSIX-only and is
+# excluded automatically on Windows. The HPULOGC_SINKS user option lands
+# with the trim work; the default registers console+rollingfile+null(+syslog).
+list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_NULL=1)
+if(NOT WIN32)
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_SYSLOG=1)
+endif()
 if(HPULOGC_CONCURRENCY_UC STREQUAL "SPSC")
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_SPSC=1)
 elseif(HPULOGC_CONCURRENCY_UC STREQUAL "MPMC")
@@ -404,8 +411,12 @@ set(HPULOGC_CORE_SOURCES
     src/output/output.c
     src/output/output_console.c
     src/output/output_file.c
+    src/output/sink_null.c
     src/output/rotate.c
 )
+if(NOT WIN32)
+    list(APPEND HPULOGC_CORE_SOURCES src/output/sink_syslog.c)
+endif()
 
 if(NOT HPULOGC_ENABLE_INI)
     list(REMOVE_ITEM HPULOGC_CORE_SOURCES src/conf/ini.c)

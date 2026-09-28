@@ -635,10 +635,8 @@ static int open_outputs(hpu_conf_t* c)
         if (c->outputs[i].handle != NULL) {
             continue; /* reused from the previous generation */
         }
-        c->outputs[i].handle = hpu_output_open(&c->outputs[i].pub, sev);
-        if (c->outputs[i].handle != NULL && c->use_utc) {
-            hpu_output_set_utc(c->outputs[i].handle, 1);
-        }
+        c->outputs[i].handle =
+            hpu_output_open_flat(&c->outputs[i].pub, sev, c->use_utc);
         if (c->outputs[i].handle == NULL) {
             fprintf(stderr,
                     "hpulogc: init error: cannot open output '%s' (%s)\n",
@@ -811,10 +809,8 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
             if (reuse_old_idx[i] >= 0) {
                 continue;
             }
-            fo->handle = hpu_output_open(&fo->pub, sev);
-            if (fo->handle != NULL && fresh->use_utc) {
-                hpu_output_set_utc(fo->handle, 1);
-            }
+            fo->handle =
+                hpu_output_open_flat(&fo->pub, sev, fresh->use_utc);
             if (fo->handle == NULL) {
                 fprintf(stderr,
                         "hpulogc: reload error: cannot open output '%s' "

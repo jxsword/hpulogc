@@ -368,14 +368,40 @@ int hpu_pipeline_process(const hpu_log_record_t* rec)
         return -1;
     }
 
-    for (k = 0; k < out_count; k++) {
-        size_t i = (size_t)out_idx[k];
+    /* Build the delivery event (§4.11.1): the rendered line plus the
+     * structured-field view decoded from the record's wire region. */
+    {
+        hpulogc_event_t ev;
+        hpulogc_field_t ev_fields[HPULOGC_MAX_FIELDS];
 
-        if (i < conf->output_count && conf->outputs[i].handle != NULL) {
-            if (hpu_output_write_line(conf->outputs[i].handle, line,
-                                      line_len,
-                                      rec->realtime_ns / 1000000000LL,
-                                      rec->level) == 0) {
+        memset(&ev, 0, sizeof(ev));
+        ev.level = rec->level;
+        ev.category = rec->category;
+        ev.category_len = rec->category_len;
+        ev.file = rec->file;
+        ev.file_len = rec->file_len;
+        ev.func = rec->func;
+        ev.func_len = rec->func_len;
+        ev.src_line = rec->line;
+        ev.msg = rec->msg;
+        ev.msg_len = rec->msg_len;
+        ev.tid = rec->tid;
+        ev.realtime_ns = rec->realtime_ns;
+        ev.mono_us = rec->mono_us;
+        ev.line = line;
+        ev.line_len = line_len;
+        ev.field_count =
+            hpu_fields_unpack(rec->fields_wire, rec->fields_len,
+                              rec->field_count, ev_fields,
+                              sizeof(ev_fields) / sizeof(ev_fields[0]));
+        ev.fields = ev.field_count > 0 ? ev_fields : NULL;
+
+        for (k = 0; k < out_count; k++) {
+            size_t i = (size_t)out_idx[k];
+
+            if (i < conf->output_count &&
+                conf->outputs[i].handle != NULL) {
+                hpu_output_deliver(conf->outputs[i].handle, &ev);
                 written = 1;
             }
         }

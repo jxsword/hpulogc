@@ -229,4 +229,20 @@ typedef int (*hpu_fields_iter_cb)(void* ud, const char* key, size_t key_len,
 void hpu_fields_iterate(const uint8_t* wire, size_t len, uint16_t count,
                         hpu_fields_iter_cb cb, void* ud);
 
+/**
+ * @brief Decode a wire region into a caller-held field array.
+ *
+ * The decoded STRING values point into @p wire (borrowed view; valid as
+ * long as the wire region is valid).
+ *
+ * @param wire   Wire region (may be NULL when count == 0).
+ * @param len    Region byte count.
+ * @param count  Field count.
+ * @param out    Output array (capacity >= count recommended).
+ * @param max    Output capacity.
+ * @return       Decoded field count (truncated to @p max).
+ */
+size_t hpu_fields_unpack(const uint8_t* wire, size_t len, uint16_t count,
+                         hpulogc_field_t* out, size_t max);
+
 #endif /* HPU_FORMAT_H */

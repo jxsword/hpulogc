@@ -868,6 +868,42 @@ void hpu_fields_iterate(const uint8_t* wire, size_t len, uint16_t count,
     }
 }
 
+size_t hpu_fields_unpack(const uint8_t* wire, size_t len, uint16_t count,
+                         hpulogc_field_t* out, size_t max)
+{
+    size_t off = 0;
+    size_t n = 0;
+    uint16_t i;
+
+    if (wire == NULL || len == 0 || out == NULL) {
+        return 0;
+    }
+    for (i = 0; i < count && n < max && off + 6 <= len; i++) {
+        uint16_t key_len;
+        uint16_t val_len;
+        uint8_t type;
+
+        memcpy(&key_len, wire + off, 2);
+        type = wire[off + 2];
+        memcpy(&val_len, wire + off + 4, 2);
+        off += 6;
+        if (off + (size_t)key_len + val_len > len) {
+            break; /* corrupt region: stop (defensive) */
+        }
+        out[n].key = (const char*)wire + off;
+        out[n].value.type = (hpulogc_field_type_t)type;
+        if (type == HPULOGC_FIELD_STR) {
+            out[n].value.v.str.s = (const char*)wire + off + key_len;
+            out[n].value.v.str.len = val_len;
+        } else {
+            memcpy(&out[n].value.v, wire + off + key_len, val_len);
+        }
+        n++;
+        off += (size_t)key_len + val_len;
+    }
+    return n;
+}
+
 int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
                       const hpu_fmt_env_t* env, hpu_fmt_cache_t* cache,
                       int escape_injection, size_t max_line,

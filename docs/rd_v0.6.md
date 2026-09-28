@@ -549,7 +549,7 @@ typedef struct hpulogc_event {
     const char* category;  size_t category_len;
     const char* file;      size_t file_len;
     const char* func;      size_t func_len;
-    int         line;      /*!< 源代码行号 */
+    int         src_line;  /*!< 源代码行号 */
     const char* msg;       size_t msg_len;   /*!< 已渲染消息体 */
     uint64_t    tid;
     int64_t     realtime_ns;

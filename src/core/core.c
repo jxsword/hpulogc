@@ -516,6 +516,7 @@ int hpu_core_start(hpu_conf_t* c)
         hpu_signal_safe_enable();
     }
 
+    hpu_sink_registry_freeze(); /* no sink registration after init */
     g_rt.state = HPU_RT_RUNNING;
     return 0;
 
@@ -757,6 +758,7 @@ void hpulogc_shutdown(void)
 
 void hpu_core_stop(void)
 {
+    hpu_sink_registry_unfreeze(); /* re-init may register new types */
     hpu_signal_safe_disable();
 
 #if HPULOGC_ENABLE_HOT_RELOAD
@@ -916,6 +918,29 @@ void hpulogc_get_build_info(hpulogc_build_info_t* info)
 #else
     info->concurrency = "mpsc";
 #endif
+}
+
+int hpulogc_get_sink_stats(const char* name, hpulogc_sink_stats_t* stats)
+{
+    size_t i;
+
+    if (stats == NULL || name == NULL) {
+        return HPULOGC_ERR_INVALID_ARG;
+    }
+    if (g_rt.state != HPU_RT_RUNNING) {
+        return HPULOGC_ERR_STATE;
+    }
+    hpu_mutex_lock(&g_rt.conf_lock);
+    for (i = 0; g_rt.conf != NULL && i < g_rt.conf->output_count; i++) {
+        if (strcmp(g_rt.conf->outputs[i].name_buf, name) == 0 &&
+            g_rt.conf->outputs[i].handle != NULL) {
+            hpu_output_get_stats(g_rt.conf->outputs[i].handle, stats);
+            hpu_mutex_unlock(&g_rt.conf_lock);
+            return HPULOGC_OK;
+        }
+    }
+    hpu_mutex_unlock(&g_rt.conf_lock);
+    return HPULOGC_ERR_INVALID_ARG; /* unknown sink instance name */
 }
 
 int hpulogc_get_stats(hpulogc_stats_t* stats)

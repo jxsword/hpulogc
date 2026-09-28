@@ -468,6 +468,13 @@ typedef struct hpulogc_sink_ops {
     int  (*sync      )(struct hpulogc_sink* sink);
 
     /**
+     * @brief Periodic fsync tick (PERIODIC severity; throttled internally
+     *        against @p interval_ns); may be NULL.
+     */
+    int  (*periodic  )(struct hpulogc_sink* sink, uint64_t now_ns,
+                       uint64_t interval_ns);
+
+    /**
      * @brief Release private resources; may be NULL.
      *
      * The core guarantees idempotent invocation and releases the instance
