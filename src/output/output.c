@@ -6,6 +6,7 @@
 
 #include "output.h"
 #include "sink_queue.h"
+#include "../conf/conf_model.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -483,92 +484,131 @@ void* hpulogc_sink_priv(hpulogc_sink_t* sink)
 }
 
 /* ------------------------------------------------------------------ */
-/* Compatibility shim: deprecated flat hpulogc_output_t -> sink keys   */
+/* Configuration-definition creation (flat shim + generic declaration) */
 /* ------------------------------------------------------------------ */
 
-hpu_output_t* hpu_output_open_flat(const hpulogc_output_t* cfg,
-                                   int effective_fsync, int use_utc,
-                                   uint32_t flush_interval_ms,
-                                   size_t batch_max)
+/**
+ * @brief Append one common key/value pair to the kv list.
+ */
+static void def_append_kv(hpu_kv_t* kvs, size_t* nkv, const char* key,
+                          char* valbuf, size_t bufcap, long v)
+{
+    snprintf(valbuf, bufcap, "%ld", v);
+    kvs[*nkv].key = key;
+    kvs[*nkv].val = valbuf;
+    (*nkv)++;
+}
+
+hpu_output_t* hpu_output_open_from_conf(const struct hpu_conf_output* def,
+                                        int effective_fsync, int use_utc,
+                                        uint32_t flush_interval_ms,
+                                        size_t batch_max, int* err)
 {
     static const char* const rotate_names[] = { "none", "size", "time",
                                                 "both" };
     static const char* const unit_names[] = { "hour", "day", "week",
                                               "month" };
-    hpu_kv_t kvs[12];
-    char bufs[4][32];
+    hpu_kv_t kvs[HPU_CONF_MAX_SINK_KV + 12];
+    char bufs[6][32];
     size_t nkv = 0;
     const char* type;
-    int err = HPULOGC_OK;
     hpu_output_t* o;
+    size_t i;
 
-    if (cfg == NULL) {
+    if (def == NULL) {
+        if (err != NULL) {
+            *err = HPULOGC_ERR_INVALID_ARG;
+        }
         return NULL;
     }
-    if (cfg->type == HPULOGC_OUT_FILE) {
-        type = "rollingfile"; /* the flat FILE maps onto rollingfile keys */
+
+    if (def->is_generic) {
+        type = def->type_name;
+        for (i = 0; i < def->kv_count; i++) {
+            kvs[nkv].key = def->kv_keys[i];
+            kvs[nkv].val = def->kv_vals[i];
+            nkv++;
+        }
+    } else if (def->pub.type == HPULOGC_OUT_FILE) {
+        /* Deprecated flat descriptor mapped onto rollingfile keys. */
+        type = "rollingfile";
         kvs[nkv].key = "path";
-        kvs[nkv].val = cfg->path != NULL ? cfg->path : "";
+        kvs[nkv].val = def->pub.path != NULL ? def->pub.path : "";
         nkv++;
         kvs[nkv].key = "rotate";
-        kvs[nkv].val = rotate_names[cfg->rotate & 3];
+        kvs[nkv].val = rotate_names[def->pub.rotate & 3];
         nkv++;
-        if (cfg->max_size > 0) {
-            snprintf(bufs[0], sizeof(bufs[0]), "%zu", cfg->max_size);
+        if (def->pub.max_size > 0) {
+            snprintf(bufs[0], sizeof(bufs[0]), "%zu", def->pub.max_size);
             kvs[nkv].key = "max size";
             kvs[nkv].val = bufs[0];
             nkv++;
         }
         kvs[nkv].key = "time unit";
-        kvs[nkv].val = unit_names[cfg->time_unit & 3];
+        kvs[nkv].val = unit_names[def->pub.time_unit & 3];
         nkv++;
-        snprintf(bufs[1], sizeof(bufs[1]), "%d", cfg->max_files);
-        kvs[nkv].key = "max files";
-        kvs[nkv].val = bufs[1];
-        nkv++;
-        if (cfg->fsync) {
+        def_append_kv(kvs, &nkv, "max files", bufs[1], sizeof(bufs[1]),
+                      (long)def->pub.max_files);
+        if (def->pub.fsync) {
             kvs[nkv].key = "fsync";
             kvs[nkv].val = "true";
             nkv++;
         }
-        if (cfg->symlink_latest) {
+        if (def->pub.symlink_latest) {
             kvs[nkv].key = "symlink latest";
             kvs[nkv].val = "true";
             nkv++;
         }
-        if (cfg->rotate_naming != NULL) {
+        if (def->pub.rotate_naming != NULL) {
             kvs[nkv].key = "rotate naming";
-            kvs[nkv].val = cfg->rotate_naming;
+            kvs[nkv].val = def->pub.rotate_naming;
             nkv++;
         }
         snprintf(bufs[2], sizeof(bufs[2]), "%o",
-                 cfg->file_mode != 0 ? cfg->file_mode : 0644u);
+                 def->pub.file_mode != 0 ? def->pub.file_mode : 0644u);
         kvs[nkv].key = "file perms";
         kvs[nkv].val = bufs[2];
         nkv++;
         snprintf(bufs[3], sizeof(bufs[3]), "%o",
-                 cfg->dir_mode != 0 ? cfg->dir_mode : 0755u);
+                 def->pub.dir_mode != 0 ? def->pub.dir_mode : 0755u);
         kvs[nkv].key = "dir perms";
         kvs[nkv].val = bufs[3];
         nkv++;
-        /* Instance name follows the v0.2 convention: the file path. */
-        return hpu_output_create(type, kvs, nkv, cfg->path != NULL
-                                                     ? cfg->path
-                                                     : "",
-                                 effective_fsync, use_utc, flush_interval_ms,
-                                 batch_max, &err);
+    } else {
+        type = "console";
+        kvs[nkv].key = "stream";
+        kvs[nkv].val = def->pub.stream == 1 ? "stderr" : "stdout";
+        nkv++;
+        kvs[nkv].key = "color";
+        kvs[nkv].val = def->pub.color ? "true" : "false";
+        nkv++;
     }
-    type = "console";
-    kvs[nkv].key = "stream";
-    kvs[nkv].val = cfg->stream == 1 ? "stderr" : "stdout";
-    nkv++;
-    kvs[nkv].key = "color";
-    kvs[nkv].val = cfg->color ? "true" : "false";
-    nkv++;
-    o = hpu_output_create(type, kvs, nkv,
-                          cfg->stream == 1 ? "console_stderr"
-                                           : "console_stdout",
-                          effective_fsync, use_utc, flush_interval_ms,
-                          batch_max, &err);
+
+    /* Common keys are appended uniformly for both shapes (§4.7.3). */
+    if (!def->enabled) {
+        kvs[nkv].key = "enabled";
+        kvs[nkv].val = "false";
+        nkv++;
+    }
+    if (def->async) {
+        kvs[nkv].key = "async";
+        kvs[nkv].val = "on";
+        nkv++;
+    }
+    if (def->queue_size > 0) {
+        snprintf(bufs[4], sizeof(bufs[4]), "%zu", def->queue_size);
+        kvs[nkv].key = "queue size";
+        kvs[nkv].val = bufs[4];
+        nkv++;
+    }
+    o = hpu_output_create(type, kvs, nkv, def->name_buf, effective_fsync,
+                          use_utc, flush_interval_ms, batch_max, err);
+    if (o == NULL && err != NULL && *err == HPULOGC_ERR_CONFIG &&
+        def->pub.type == HPULOGC_OUT_FILE && !def->is_generic) {
+        /* The v0.2 flat path reported I/O failures for open problems;
+         * config-value errors keep their code, everything else maps to
+         * ERR_IO for compatibility. */
+        *err = HPULOGC_ERR_IO;
+    }
     return o;
 }

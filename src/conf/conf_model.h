@@ -33,8 +33,20 @@ typedef struct hpu_throttle_cfg {
     int    sampling_n;       /*!< Deterministic 1/N divisor (1 = no sampling) */
 } hpu_throttle_cfg_t;
 
+/** @brief Maximum private key/value pairs per generic sink definition. */
+#define HPU_CONF_MAX_SINK_KV 32
+
+/** @brief Owned storage pool for generic sink key/value bytes. */
+#define HPU_CONF_SINK_KV_POOL 8192
+
 /**
  * @brief One output definition (public fields + owned string storage).
+ *
+ * Two shapes share this record (rd_v0.6 §4.7): the deprecated flat
+ * descriptor (@p pub, console/rollingfile shim) and the generic sink
+ * declaration (@p is_generic with @p type_name + borrowed key/value
+ * arrays; the borrowed strings stay valid through init because create
+ * consumes them at finalize time).
  */
 typedef struct hpu_conf_output {
     hpulogc_output_t pub;              /*!< Public view (strings owned) */
@@ -42,6 +54,17 @@ typedef struct hpu_conf_output {
     char path_buf[HPULOGC_MAX_PATH_LEN];
     char naming_buf[HPULOGC_MAX_FMT_LEN]; /*!< Rotate naming template */
     hpu_output_t* handle;              /*!< Opened backend, NULL if not */
+    /* Generic sink declaration (is_generic) + common keys (all shapes) */
+    int    is_generic;                 /*!< Non-zero: use type_name + kv arrays */
+    char   type_name[HPULOGC_MAX_NAME_LEN]; /*!< Registered sink type name */
+    const char* kv_keys[HPU_CONF_MAX_SINK_KV]; /*!< Private keys */
+    const char* kv_vals[HPU_CONF_MAX_SINK_KV]; /*!< Private values */
+    size_t kv_count;                   /*!< Number of key/value pairs */
+    char   kv_pool[HPU_CONF_SINK_KV_POOL]; /*!< Owned key/value bytes */
+    size_t kv_pool_len;                /*!< Used pool bytes */
+    int    enabled;                    /*!< Common key `enabled`, default 1 */
+    int    async;                      /*!< Common key `async`, default 0 */
+    size_t queue_size;                 /*!< Common key `queue size`, 0 = default */
 } hpu_conf_output_t;
 
 /**

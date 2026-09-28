@@ -17,6 +17,11 @@
 #include "hpulogc.h"
 #include "../atomic/hpulogc_atomic.h"
 
+/* File-scope forward declaration: the config definition struct lives in
+ * conf_model.h; without this, the tag in a parameter list would get
+ * prototype scope and conflict with the completed definition. */
+struct hpu_conf_output;
+
 /** @brief Maximum bytes pending in a file sink's write buffer before a
  *         flush is forced. */
 #define HPU_OUT_IO_BUF_SIZE (64U * 1024U)
@@ -140,10 +145,17 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
  *        flat hpulogc_output_t descriptor (mapped onto console/rollingfile
  *        keys; behavior identical to v0.2).
  */
-hpu_output_t* hpu_output_open_flat(const hpulogc_output_t* cfg,
-                                   int effective_fsync, int use_utc,
-                                   uint32_t flush_interval_ms,
-                                   size_t batch_max);
+/**
+ * @brief Create one sink instance from a configuration definition.
+ *
+ * Handles both shapes (flat shim mapping and generic declaration) plus
+ * the common keys; @p err carries ERR_CONFIG (unknown key/type, invalid
+ * value) / ERR_IO (open failure) / ERR_NO_MEM.
+ */
+hpu_output_t* hpu_output_open_from_conf(const struct hpu_conf_output* def,
+                                        int effective_fsync, int use_utc,
+                                        uint32_t flush_interval_ms,
+                                        size_t batch_max, int* err);
 
 /**
  * @brief Wait for the async queue to drain (bounded), flush, run the

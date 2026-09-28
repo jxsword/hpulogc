@@ -163,6 +163,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
             hpu_conf_output_t* dst = &c->outputs[i];
 
             dst->pub = *src;
+        dst->enabled = 1; /* common-key default (rd_v0.6 §4.7.3) */
             snprintf(dst->name_buf, sizeof(dst->name_buf), "out%zu", i);
             dst->pub.rotate_naming = NULL;
 
@@ -357,6 +358,91 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 "hpulogc: config error: flush interval out of range\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
+    /* Generic sink declarations (rd_v0.6 §4.10.5): appended to the same
+     * outputs namespace; key/value strings are borrowed from the caller's
+     * config and consumed by create during finalize (within the documented
+     * "strings valid until init returns" window). */
+    if (cfg->sink_count > 0) {
+        hpu_conf_output_t* grown;
+
+        if (cfg->sink_count > HPULOGC_MAX_OUTPUTS ||
+            cfg->output_count + cfg->sink_count > HPULOGC_MAX_OUTPUTS) {
+            fprintf(stderr, "hpulogc: config error: too many sinks\n");
+            return HPULOGC_ERR_INVALID_ARG;
+        }
+        grown = realloc(c->outputs, (cfg->output_count + cfg->sink_count) *
+                                        sizeof(hpu_conf_output_t));
+        if (grown == NULL) {
+            return HPULOGC_ERR_NO_MEM;
+        }
+        c->outputs = grown;
+        for (i = 0; i < cfg->sink_count; i++) {
+            const hpulogc_sink_decl_t* d = &cfg->sinks[i];
+            hpu_conf_output_t* o =
+                &c->outputs[c->output_count + i];
+
+            memset(o, 0, sizeof(*o));
+            if (d->name == NULL || d->name[0] == '\0' ||
+                strlen(d->name) >= HPULOGC_MAX_NAME_LEN ||
+                d->type == NULL || d->type[0] == '\0' ||
+                strlen(d->type) >= HPULOGC_MAX_NAME_LEN) {
+                fprintf(stderr,
+                        "hpulogc: config error: invalid sink name/type\n");
+                return HPULOGC_ERR_INVALID_ARG;
+            }
+            snprintf(o->name_buf, sizeof(o->name_buf), "%s", d->name);
+            o->is_generic = 1;
+            snprintf(o->type_name, sizeof(o->type_name), "%s", d->type);
+            o->enabled = 1;
+            o->async = 0;
+            if (d->count > HPU_CONF_MAX_SINK_KV) {
+                fprintf(stderr,
+                        "hpulogc: config error: too many sink "
+                        "parameters\n");
+                return HPULOGC_ERR_INVALID_ARG;
+            }
+            {
+                size_t k;
+
+                for (k = 0; k < d->count; k++) {
+                    if (d->keys == NULL || d->vals == NULL ||
+                        d->keys[k] == NULL || d->vals[k] == NULL) {
+                        fprintf(stderr,
+                                "hpulogc: config error: sink key/value "
+                                "missing\n");
+                        return HPULOGC_ERR_INVALID_ARG;
+                    }
+                    if (strcmp(d->keys[k], "enabled") == 0) {
+                        o->enabled = strcmp(d->vals[k], "true") == 0 ||
+                                     strcmp(d->vals[k], "on") == 0;
+                        continue;
+                    }
+                    if (strcmp(d->keys[k], "async") == 0) {
+                        o->async = strcmp(d->vals[k], "on") == 0 ||
+                                   strcmp(d->vals[k], "true") == 0;
+                        continue;
+                    }
+                    if (strcmp(d->keys[k], "queue size") == 0) {
+                        unsigned long long sz;
+
+                        if (hpu_parse_size_str(d->vals[k], &sz) != 0) {
+                            fprintf(stderr,
+                                    "hpulogc: config error: invalid queue "
+                                    "size\n");
+                            return HPULOGC_ERR_INVALID_ARG;
+                        }
+                        o->queue_size = (size_t)sz;
+                        continue;
+                    }
+                    o->kv_keys[o->kv_count] = d->keys[k];
+                    o->kv_vals[o->kv_count] = d->vals[k];
+                    o->kv_count++;
+                }
+            }
+        }
+        c->output_count += cfg->sink_count;
+    }
+
     c->batch_size = cfg->batch_size;
     c->flush_interval_ms = cfg->flush_interval_ms;
     c->shutdown_timeout_ms = cfg->shutdown_timeout_ms;
@@ -624,6 +710,7 @@ static int check_overflow_policy(hpu_conf_t* c)
 static int open_outputs(hpu_conf_t* c)
 {
     size_t i;
+    int err_out;
 
     for (i = 0; i < c->output_count; i++) {
         int sev = hpu_fsync_severity(c->crash_safety);
@@ -635,14 +722,24 @@ static int open_outputs(hpu_conf_t* c)
         if (c->outputs[i].handle != NULL) {
             continue; /* reused from the previous generation */
         }
+        err_out = HPULOGC_OK;
         c->outputs[i].handle =
-            hpu_output_open_flat(&c->outputs[i].pub, sev, c->use_utc,
-                                 c->flush_interval_ms, c->batch_size);
+            hpu_output_open_from_conf(&c->outputs[i], sev, c->use_utc,
+                                      c->flush_interval_ms, c->batch_size,
+                                      &err_out);
         if (c->outputs[i].handle == NULL) {
+            if (err_out == HPULOGC_ERR_CONFIG) {
+                /* configure/init rejection: unknown key or bad value */
+                fprintf(stderr,
+                        "hpulogc: init error: invalid definition for "
+                        "output '%s'\n",
+                        c->outputs[i].name_buf);
+                return HPULOGC_ERR_CONFIG;
+            }
             fprintf(stderr,
                     "hpulogc: init error: cannot open output '%s' (%s)\n",
                     c->outputs[i].path_buf, strerror(errno));
-            return HPULOGC_ERR_IO;
+            return err_out != HPULOGC_OK ? err_out : HPULOGC_ERR_IO;
         }
     }
     return 0;
@@ -713,6 +810,7 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
 {
     size_t i;
     int rc;
+    int err_out;
 
     if (hpu_conf_find_format(fresh, fresh->default_format) == NULL) {
         fprintf(stderr,
@@ -810,11 +908,25 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
             if (reuse_old_idx[i] >= 0) {
                 continue;
             }
+            err_out = HPULOGC_OK;
             fo->handle =
-                hpu_output_open_flat(&fo->pub, sev, fresh->use_utc,
-                                     fresh->flush_interval_ms,
-                                     fresh->batch_size);
+                hpu_output_open_from_conf(fo, sev, fresh->use_utc,
+                                          fresh->flush_interval_ms,
+                                          fresh->batch_size, &err_out);
             if (fo->handle == NULL) {
+                if (err_out == HPULOGC_ERR_CONFIG) {
+                    fprintf(stderr,
+                            "hpulogc: reload error: invalid definition for "
+                            "output '%s'\n",
+                            fo->name_buf);
+                    while (opened_count > 0) {
+                        hpu_output_close(
+                            fresh->outputs[opened[--opened_count]].handle,
+                            fresh->shutdown_timeout_ms);
+                        fresh->outputs[opened[opened_count]].handle = NULL;
+                    }
+                    return HPULOGC_ERR_CONFIG;
+                }
                 fprintf(stderr,
                         "hpulogc: reload error: cannot open output '%s' "
                         "(%s)\n",
