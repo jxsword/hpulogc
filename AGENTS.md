@@ -279,3 +279,12 @@ parse_result_t process_incoming_frame(const uint8_t *frame, size_t frame_len)
 - **Encoding**: A pre-commit hook runs `file -i` or `chardet` to verify UTF-8; non-UTF-8 files are rejected.
 - **Comment language**: A simple script (or `codespell` with a custom dictionary) flags Chinese/non-ASCII comment text.
 
+
+## 8. Decision Records (协作约定)
+
+- Project-specific decision record file: **`docs/decision_log.md`**.
+- Whenever a decision among candidate options is needed, present the FULL
+  decision matrix (background / all options with trade-offs / recommendation /
+  impact) in the reply BEFORE asking; after the decision is settled, append an
+  entry (all options, including rejected ones with reasons, plus the conclusion
+  and rationale) to `docs/decision_log.md`.
