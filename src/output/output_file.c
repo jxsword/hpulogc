@@ -290,9 +290,9 @@ static int file_emit_one_locked(hpulogc_sink_t* sink, hpu_file_priv_t* f,
     const char* line = ev->line;
     size_t len = ev->line_len;
     int64_t ts_sec = ev->realtime_ns / 1000000000LL;
-    int rc = 0;
 
 #if HPULOGC_ENABLE_ROTATE
+    int rc;
     if (f->rotate.enabled) {
         int need_rotate = 0;
 
