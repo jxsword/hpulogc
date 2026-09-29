@@ -196,7 +196,10 @@ static inline void hpu_test_rmtree(const char* path)
     WIN32_FIND_DATAA fd;
     HANDLE find;
 
-    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    /* precision bounds keep -Wformat-truncation quiet; rmtree is
+     * best-effort and over-long components are degenerate anyway */
+    snprintf(pattern, sizeof(pattern), "%.*s\\*",
+             (int)sizeof(pattern) - 3, path);
     find = FindFirstFileA(pattern, &fd);
     if (find != INVALID_HANDLE_VALUE) {
         for (;;) {
@@ -204,7 +207,9 @@ static inline void hpu_test_rmtree(const char* path)
                 strcmp(fd.cFileName, "..") != 0) {
                 char full[MAX_PATH];
 
-                snprintf(full, sizeof(full), "%s\\%s", path, fd.cFileName);
+                snprintf(full, sizeof(full), "%.*s\\%.*s",
+                         (int)sizeof(full) / 2 - 1, path,
+                         (int)sizeof(full) / 2 - 2, fd.cFileName);
                 if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     hpu_test_rmtree(full);
                 } else {

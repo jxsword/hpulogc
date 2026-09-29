@@ -273,6 +273,12 @@ endif()
 if(HPU_PLATFORM STREQUAL "windows")
     # Keep the Win32 umbrella header from polluting library TUs.
     list(APPEND HPULOGC_PRIVATE_DEFINES WIN32_LEAN_AND_MEAN NOMINMAX)
+    if(MINGW)
+        # MinGW flavors that default to the msvcrt printf do not
+        # understand C99 %z; pin the ANSI implementation so formatting
+        # behavior is deterministic across MinGW toolchains.
+        list(APPEND HPULOGC_PRIVATE_DEFINES __USE_MINGW_ANSI_STDIO=1)
+    endif()
 endif()
 # Built-in sink whitelist (rd_v0.6 §4.7.4): console/rollingfile are not
 # trimmable; syslog and null come and go with HPULOGC_SINKS. syslog is

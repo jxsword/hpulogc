@@ -240,7 +240,10 @@ static int file_init(hpulogc_sink_t* sink)
         b->fsync_sev = HPU_FSYNC_SEV_ENTRY; /* per-sink fsync is stricter */
     }
     if (b->name[0] == '\0') {
-        snprintf(b->name, sizeof(b->name), "%s", f->path);
+        /* name is the 64-byte routing key: fall back to the path,
+         * truncated (precision bounds the %s for -Wformat-truncation) */
+        snprintf(b->name, sizeof(b->name), "%.*s",
+                 (int)sizeof(b->name) - 1, f->path);
     }
     return 0;
 }

@@ -21,8 +21,6 @@ typedef struct slowcap_priv {
     char last_line[128];           /*!< Last line copy */
 } slowcap_priv_t;
 
-static hpu_atomic_u32 slow_started; /*!< One-time guard for registration */
-
 static void slowcap_emit(hpulogc_sink_t* sink, const hpulogc_event_t* ev)
 {
     slowcap_priv_t* p = hpulogc_sink_priv(sink);
@@ -137,8 +135,6 @@ TEST(sink_async_queue_full_drops)
     {
         /* ~3 KB rendered line: a 64 KB queue holds ~20 events while the
          * worker drains at ~2 ms/record -- the producer outruns it. */
-        static const char filler[] =
-            "FILLER012345678901234567890123456789012345678901234567890";
         char big[2048];
 
         memset(big, 'x', sizeof(big) - 1);
