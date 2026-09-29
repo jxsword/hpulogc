@@ -214,6 +214,8 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 | `rollingfile` | `file` | 文件写入，含轮转（size/time/both）、备份数、命名模板、`.latest` 软链、fsync | `SYNC \| ASYNC \| LINE_ATOMIC \| FSYNC` | 无 | 轮转受 `HPULOGC_ENABLE_ROTATE` 裁剪；sink 本体不可裁剪 |
 | `syslog` | — | POSIX `openlog`/`syslog` 直通 | `SYNC` | libc syslog | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册** |
 | `null` | — | 丢弃一切（测试/基线；也是「审计/指标下线」的路由落点，§7.3） | `SYNC \| ASYNC` | 无 | **默认注册**；`min` 预设排除（§5） |
+| `tcp` | — | TCP 行帧输出（每记录追加 `\n`）；断线指数退避重连（§4.10.8） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（v1 POSIX-only）** |
+| `udp` | — | UDP 数据报输出（每记录恰一个数据报；MTU 截断，§4.10.8） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | 同 `tcp` |
 
 - `file` 是 `rollingfile` 的**配置别名**：仅把 `rotate` 的**默认值**设为
   `none`，其余键与 `rollingfile` 完全一致；显式书写 `rotate=size|time|both`
@@ -224,10 +226,10 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
   32）限制**类型**数量（内置 + 自定义）。
 - `[outputs]` 中定义的所有 rollingfile 类 sink 在 init 时即打开（沿用
   fail-fast 语义，§4.10.2）；打开失败使 init 失败（`HPULOGC_ERR_IO`）。
-- **Socket 输出**：v0.1 的 socket 骨架预留**删除**（现行代码已 fail-fast，
-  措辞改为「未注册类型」统一处理）。需要网络输出时以**自定义 sink** 形态
-  实现（§4.10.5），在 `[outputs]` 中 `type = <自定义类型>`；未注册的类型
-  一律 fail-fast（§10.4）。
+- **Socket 输出**：v0.1 的 socket 骨架预留已由内置网络型 sink `tcp`/`udp`
+  兑现（v0.6.2，§4.10.8）；未注册的类型一律 fail-fast（§10.4）。需要其他
+  网络协议（HTTP/Webhook 等）时仍以**自定义 sink** 形态实现（§4.10.5），
+  在 `[outputs]` 中 `type = <自定义类型>`。
 
 #### 4.7.2 内置 sink 的配置键
 
@@ -249,6 +251,11 @@ sink 的**私有键**（逐项交给 `configure`）：
 | rollingfile | `file perms` | 文件权限（八进制） | 0644 | Windows 忽略并输出警告 |
 | rollingfile | `dir perms` | 目录权限（八进制） | 0755 | Windows 忽略并输出警告 |
 | syslog | `facility` | syslog facility（`user`/`daemon`/`local0`..`local7` 等） | `user` | Windows 上该类型不可注册 |
+| tcp/udp | `host` | 远端主机（IP 或域名；start 时解析） | 必填 | v1 POSIX-only（Windows 不可注册） |
+| tcp/udp | `port` | 远端端口 | 必填 | 1–65535 |
+| tcp | `reconnect backoff` | 断线重连初始退避（秒） | 1 | 1–60 |
+| tcp | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
+| udp | `mtu` | 单数据报 payload 上限（字节） | 1472 | 576–65507 |
 
 - 上述键即 v0.2 `hpulogc_output_t` 的字段集合；`rotate` / `time unit` 的
   取值集合沿用 `hpulogc_rotate_t` / `hpulogc_time_unit_t` 两个枚举（二者
@@ -277,7 +284,8 @@ sink 的**私有键**（逐项交给 `configure`）：
 #### 4.7.4 类型注册与裁剪（规范性）
 
 - 构建选项 **`HPULOGC_SINKS`**（CMake string，逗号分隔白名单，默认
-  `console,rollingfile,syslog,null`；Windows 自动移除 `syslog`）决定哪些
+  `console,rollingfile,syslog,tcp,udp,null`；Windows 自动移除
+  `syslog`/`tcp`/`udp`——POSIX-only）决定哪些
   内置类型被编译进库；未列入的类型：注册表不含之，配置引用时报
   「未注册类型」fail-fast。
 - `min` 预设强制 `HPULOGC_SINKS=console,rollingfile`（§5）；其余预设不
@@ -339,7 +347,7 @@ HPULOGC_xxx 宏 / hpulogc_log()
 
 ### 4.10 Sink 契约（规范性）
 
-### 3.1 操作表与 ABI（§4.10.1）
+#### 4.10.1 操作表与 ABI
 
 ```c
 struct hpulogc_sink;
@@ -520,6 +528,69 @@ typedef struct {
   failed 记账逐一平移）。
 - `hpu_output_write_direct()`（探索确认无调用者）随本次重构删除。
 - `hpu_io_fail_hook` 注入点保留并平移进 rollingfile 的实现（测试依赖）。
+
+#### 4.10.8 网络型 sink（规范性）
+
+> 本节约束随库分发的网络型内置 sink（v0.6.2 起：`tcp` / `udp`），并为后续
+> 网络族（Unix domain socket / FIFO、HTTP/Webhook 等）提供公共语义基线。
+> 平台范围：**v1 仅 POSIX**（`HPULOGC_SINKS` 中的 `tcp`/`udp` 在 Windows
+> 构建上自动排除，同 `syslog`）；Windows 运行支持为后续工单。
+
+**类型与配置键**（`configure` 私有键，逐项灌入；完整表亦见 §4.7.2）：
+
+| sink | 键 | 含义 | 默认值 | 约束 |
+|------|----|------|--------|------|
+| tcp/udp | `host` | 远端主机（IP 或域名；start 时解析） | 必填 | 解析失败 → start 失败 `HPULOGC_ERR_IO` |
+| tcp/udp | `port` | 远端端口 | 必填 | 1–65535 |
+| tcp | `reconnect backoff` | 断线重连初始退避（秒） | 1 | 1–60 |
+| tcp | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
+| udp | `mtu` | 单数据报 payload 上限（字节） | 1472 | 576–65507（1472 = 以太网 1500 − IPv4 头 20 − UDP 头 8） |
+
+**共同语义**：
+
+- 能力位 `SYNC | ASYNC | LINE_ATOMIC`（无 `FSYNC`，`sync` 回调 = NULL，
+  `flush` 为无操作——socket 缓冲由 OS 管理）。**推荐 `async=on`**：
+  网络延迟与断线重试只拖累该实例的专属 worker（第二级队列恒 discard
+  隔离，§4.10.6/D-S5）；`async=off` 时 send/connect 阻塞发生在调用方
+  线程，由使用方自担。
+- 不实现 `periodic`（异步实例的 worker 不调用 `periodic`，§4.10.7 探明
+  约束）；运行期行为全部由 emit 路径驱动。
+- 热重载：网络型 sink 无状态可复用——任何私有键变化即销毁重建，
+  **TCP 连接随之断开、由新实例重新 connect**（`enabled` 翻转除外，
+  不重建，§4.10.6 热重载规则）。
+- 投递边界：**at-most-once**。发送失败、退避窗口内、队列满的事件不缓存
+  重发（重发需跨回调保留事件并引入重复投递，v1 不做）；断线瞬间接收端
+  可能见到撕裂行，TCP 行协议接收方应丢弃无终止符的残行。
+- 记账（§4.10.3 恒等式闭合）：成功计 `written`（deliver 层已计）；
+  截断、EAGAIN、发送失败、退避窗口内事件计 `failed`（sink 经核心内部
+  记账入口累加）；队列满计 `dropped`（核心累加）。
+
+**UDP 语义**：
+
+- 无连接：`start` 仅解析地址并创建 socket（不 connect、不握手）；每条
+  记录经一次 `sendto` 恰好产生一个数据报。
+- 行渲染长度 > `mtu` → **截断至 `mtu` 字节后仍投递**，该事件计 `failed`
+  （不计 `written`）——接收方收到可解析的截断行，记账如实反映降级投递。
+  **不做 IP 分片**：分片将丢包放大效应从"整报丢失"放大为"任一分片丢失
+  即整报丢弃"，与 UDP 的丢包容忍模型相悖，故在 sink 内主动截断。
+- socket 为非阻塞：`EAGAIN`（内核发送缓冲暂满等）→ 丢弃该事件计
+  `failed`，不阻塞、不重试（与 D-S5 精神一致）。
+- **不保证送达**（UDP 尽力而为 + §4.10.6 恒 discard 双重明示）。
+
+**TCP 语义**：
+
+- 行帧：每条记录渲染行追加一个 `\n` 后写出（兼容 syslog/rsyslog 行协议
+  接收方）；length-prefix 帧为后续可选项，v1 不提供。
+- `start` 首连（resolve + connect）：失败 → `HPULOGC_ERR_IO` fail-fast
+  （配置错误早暴露，沿用 rollingfile 打开语义）。
+- 运行期断线（`EPIPE`/`ECONNRESET` 等）：置断线态并进入**指数退避重连**
+  ——初始 `reconnect backoff`，每次重连失败 ×2，封顶
+  `reconnect backoff max`；重连成功复位为初始值。**重连由事件驱动**：
+  emit 路径检查单调时钟——退避窗口未到期 → 该事件计 `failed` 即返回；
+  到期 → 尝试重连。重连沿用 start 时解析的地址（回调内不做 DNS 解析：
+  阻塞且可能动态分配，违反 §4.10.4）。
+- 部分写（send 返回 < 期望）：同一回调内循环补发剩余字节；发送合并缓冲
+  由 priv 预分配（create 时清零），稳态零 malloc（§4.10.4）。
 
 ---
 
@@ -1183,6 +1254,9 @@ signal reload = false
 #               max files, fsync, symlink latest, rotate naming, file perms, dir perms
 # file:         rollingfile 的配置别名（rotate 默认 none），其余键完全一致
 # syslog:       facility=user|daemon|local0..local7（POSIX 专属；Windows 不可注册）
+# tcp/udp:      host, port（1-65535，必填）；tcp 另有 reconnect backoff / reconnect backoff max，
+#               udp 另有 mtu（网络型 sink，§4.10.8；v1 POSIX 专属，Windows 不可注册；推荐 async=on；
+#               热重载变更任何私有键即断连重建）
 # null:         无私有键（丢弃一切；审计/指标下线的路由落点）
 # <自定义类型>:  hpulogc_sink_register 注册的类型（§4.10.5）；未注册类型定义即启动失败
 # ============================================================================
@@ -1196,6 +1270,10 @@ error_log    = file, path=/var/log/myapp/error.log, rotate=time, time unit=day, 
 debug_log    = file, path=/var/log/myapp/debug.log, rotate=both, max size=50mb, time unit=day, max files=7
 audit_log    = file, path=/var/log/myapp/audit.log, rotate=none, fsync=true, file perms=0600
 syslog_out   = syslog, facility=user
+
+# 网络输出示例（v1 POSIX 专属；行帧协议：TCP 每行追加 \n，UDP 每记录一个数据报）：
+net_tcp      = tcp, host=127.0.0.1, port=514, async=on, queue size=1mb, reconnect backoff=1, reconnect backoff max=30
+net_udp      = udp, host=127.0.0.1, port=514, async=on, queue size=1mb, mtu=1472
 
 # 异步投递示例：慢 sink 隔离（队列满丢弃该 sink 的事件，不阻塞其他 sink，§4.10.6）
 net_sink     = rollingfile, path=/var/log/myapp/net.log, async=on, queue size=1mb
@@ -1559,7 +1637,7 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 优先级 | 项目 |
 |--------|------|
 | **P0（必须）** | 纯 C 实现、跨平台、线程安全、6 级日志、环形缓冲（有锁）、文件+控制台输出、INI 配置、单元测试、CMake 构建、API 签名、导出符号、错误处理、编译警告、Sanitizer、安装规则、示例、配置解析器行为约束 |
-| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）** |
+| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）**、**网络型 sink（TCP/UDP）（§4.10.8）** |
 | **P2（增强）** | 彩色输出（Linux 部分随 Phase 1，Windows VT 适配随 Phase 2）、格式定制、包管理器、静态分析、文档生成、移植指南、`hpulogc_strerror` 错误描述 API、**配置校验 `hpulogc_conf_validate` + `hpulogc_chk_conf` CLI（§7.3/§11）** |
 
 ---
@@ -1697,6 +1775,28 @@ docs/decision_log.md D-S1..S7）**：
 4. 附录 A.1 状态列全量更新：#1/#2/#11/#14 已采纳（含落地位置）、
    #5/#6/#7/#12/#13 已决策采纳（排期见仓库 todo.md）、#8/#9 已决策
    不采纳（A.2 #6/#7 补充登记，含理由）。
+
+### v0.6.2（2026-09-29）
+
+网络型 sink 第一期（任务来源 todo.md 二.11「官方网络 sink 参考实现」）。
+规范先行增补，随后以 `src/platform/hpu_net` 平台契约与
+`src/output/sink_tcp.c`/`sink_udp.c` 实现（vtable ABI v1 不变，append-only）：
+
+1. 新增 §4.10.8「网络型 sink」（规范性）：`tcp`/`udp` 类型与配置键
+   （`host`/`port` 必填、TCP `reconnect backoff`/`reconnect backoff max`、
+   UDP `mtu`）；UDP 截断至 mtu 后仍投递并计 failed、EAGAIN 丢弃计
+   failed、不保证送达；TCP 行帧（`\n`）、start fail-fast、指数退避
+   重连（事件驱动、不重解析 DNS）、部分写循环补发；at-most-once 投递
+   边界、推荐 async=on、热重载断连重建明示；v1 POSIX-only。
+2. §4.7.1 内置清单追加 `tcp`/`udp` 行，并改写 Socket 输出条款（骨架
+   预留由内置网络型 sink 兑现）；§4.7.2 追加私有键行。
+3. §4.7.4 `HPULOGC_SINKS` 默认串更新为
+   `console,rollingfile,syslog,tcp,udp,null`（Windows 自动移除
+   syslog/tcp/udp）；`min` 预设不含 tcp/udp（§5 不变）。
+4. §10.3 配置模板追加 tcp/udp 键位图例与示例（INI 片段经
+   `hpulogc_chk_conf` 实测）。
+5. §17 P1 行追加「网络型 sink（TCP/UDP）」。
+6. 笔误修正：§4.10.1 小节标题层级与编号（原误作「### 3.1」）。
 
 ---
 
