@@ -461,3 +461,75 @@
   `scripts/vcpkg_smoke/`（最小消费者工程）、
   `.github/workflows/vcpkg_smoke.yml`（windows-2025 冒烟作业）、
   README"安装与集成"章节 vcpkg 小节。
+
+## D-R11 外部轮转检测的节流参数 N（2026-09-30，工单「#5 外部轮转检测 + bench_sink 常态化性能回归」）
+
+- 背景：附录 A.1 #5 已决策"节流方案（每 N 条 + 写失败时比对 inode）"，
+  但 N 的取值与可配置性未定。N 越小检测窗口越短、fstat 开销占比越高；
+  测试需跨过 N 才能覆盖检测路径。
+- 选项：
+  - A. 固定常量 1024（output_file.c 内 static const，不可配置）——优点：
+    零配置面、规范条款最简（"固定 1024"一句话）、实现最少；测试写
+    ~2100 行即可覆盖，成本可忽略 / 缺点：极端场景（低频日志 + 频繁
+    logrotate）检测延迟最多 1024 条 / 代价：无
+  - B. 可配置（新增输出配置键，如 `rotate check every`）——优点：用户可
+    按场景调小/调大 / 缺点：配置面扩大（键名、校验、文档、output.c 映射
+    链三处改动），绝大多数用户不会触碰 / 代价：规范 + 配置模型 + 映射链
+    维护成本
+  - C. 固定但暴露编译期宏——优点：编译期可调 / 缺点：无运行期价值，
+    规范仍需解释宏语义，半吊子方案 / 代价：宏语义登记 + 文档解释
+- 结论：A（固定 1024）。
+- 理由：logrotate 典型轮转周期远大于 1024 条的写入窗口，检测延迟可接受；
+  任务书授权实现自由度（"建议每写 1024 条或可配置"），A 的收益/成本比
+  最高；B 的配置面扩散无对应真实需求；C 兼具 A 的不灵活与 B 的文档成本。
+- 影响：rd_v0.6 §4.6（v0.6.5）、src/output/output_file.c 常量、
+  docs/implementation_notes.md 自由度登记。
+
+## D-R12 Win32 打开文件共享模式扩展（2026-09-30，工单「#5 外部轮转检测 + bench_sink 常态化性能回归」）
+
+- 背景：外部轮转检测的测试需模拟 logrotate（mv 已打开文件 + 新建同名）。
+  win32_fs.c 的 `hpu_fs_open_append` 以 `FILE_SHARE_READ` 打开，外部进程
+  重命名/删除会共享冲突失败——不扩展共享模式，外部轮转在 Windows 上无法
+  被任何外部工具触发，检测在该平台形同虚设。
+- 选项：
+  - A. 共享模式扩为 `FILE_SHARE_READ | FILE_SHARE_WRITE |
+    FILE_SHARE_DELETE`——优点：特性在 Windows 真实可用；测试双平台跑齐；
+    与 POSIX 打开语义（外部进程可自由 rename/unlink）对齐；库本就不依赖
+    独占访问 / 缺点：改变现有平台行为（外部进程可在句柄持有期间重命名/
+    删除文件——但这正是本特性要检测的场景） / 代价：win32_fs.c 一处改动
+    + 行为注记登记；需验证 FlushFileBuffers（fsync）不受影响
+  - B. 保持现状，测试 POSIX-only——优点：零行为变化 / 缺点：Windows 上
+    检测无法被外部触发；测试双平台不对齐；规范需写平台差异条款 / 代价：
+    规范复杂化、平台上限
+  - C. 仅测试内绕过（测试用私有 API 打开）——优点：不动库代码 / 缺点：
+    测试模拟失真（真实 logrotate 场景在 Windows 仍不可用），私有 API
+    泄漏进测试 / 代价：不诚实的覆盖
+- 结论：A。
+- 理由："logrotate 互操作"要在 Windows 完整落地就必须允许外部替换已打开
+  文件；POSIX 语义本就如此，A 是对齐而非放宽；fsync 经 FlushFileBuffers
+  不依赖共享模式。B 让特性在 1/3 目标平台失效，C 是假覆盖。
+- 影响：src/platform/win32/win32_fs.c（共享标志 + 头注释）、
+  docs/rd_v0.6.md §4.6（v0.6.5 平台注记）、tests/unit/test_ext_rotate.c
+  双平台运行。
+
+## D-R13 bench_sink/bench_log 夜间回归作业的频率与时刻（2026-09-30，工单「#5 外部轮转检测 + bench_sink 常态化性能回归」）
+
+- 背景：CI 现有 schedule 仅有每周一 21:00 UTC 的 TSan 夜间作业
+  （ci.yml），bench 目前仅手动 bench_dispatch（windows/macos，无阈值
+  判断）。任务书要求"夜间常态化回归、与 TSan 错峰、>25% 相对阈值"。
+- 选项：
+  - A. 每日 02:00 UTC——优点：回归发现最多滞后一天；与周一 21:00 UTC
+    天然错峰；ubuntu-latest 公共 runner 成本低，25% 相对阈值吸收
+    runner 噪声 / 缺点：runner 用量最大（7×/周） / 代价：每日一次
+    bench 作业（分钟级）
+  - B. 每周二 02:00 UTC（每周）——优点：省额度；紧随 TSan 之后一天 /
+    缺点：回归发现滞后最多一周，"夜间常态化"名不副实 / 代价：覆盖弱
+- 结论：A（每日 02:00 UTC）。
+- 理由：性能回归的价值在"及时发现"，每日调度与任务书"常态化"表述一致；
+  错峰天然满足（时刻不相交）；runner 成本为分钟级 ubuntu 作业，可忽略。
+  基线建立采用 bootstrap：PR 合并后 workflow_dispatch 首跑 → 数值转录
+  进仓库内 tests/bench/baseline_linux.json → 此后每晚自动比较，基线缺失
+  时脚本告警放行（不阻塞 CI）。
+- 影响：.github/workflows/ci.yml（schedule + bench-nightly job）、
+  scripts/bench_gate.py、tests/bench/baseline_linux.json、
+  docs/perf_report_sinks.md（基线建立流程）。

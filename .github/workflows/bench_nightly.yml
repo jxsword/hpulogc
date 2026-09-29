@@ -1,0 +1,72 @@
+# ============================================================================
+# hpulogc nightly bench regression gate (D-R13, todo #5)
+#
+# Runs bench_log (amortized) and bench_sink (all scenarios) on a pinned
+# ubuntu runner and compares the gate metrics against the committed
+# baseline tests/bench/baseline_linux.json via scripts/bench_gate.py.
+# Any metric regressing more than 25% relative fails the job.
+#
+# Schedule: daily 02:00 UTC. This lives in a SEPARATE workflow (not a cron
+# row in ci.yml) on purpose: GitHub fires every schedule row of a workflow
+# on every schedule event, so a second cron inside ci.yml would turn the
+# Monday TSan nightly into a daily run. Two workflows = two independent
+# schedules, staggered against each other (02:00 daily vs Mon 21:00 UTC).
+#
+# Runner noise: shared GitHub runners vary roughly 10-20% between runs.
+# The 25% relative threshold absorbs typical noise; a red job that cannot
+# be reproduced on a manual re-run (workflow_dispatch) is noise, not a
+# regression. Sustained regressions are real and should be investigated
+# before the responsible change is merged.
+#
+# Baseline bootstrap (first run):
+#   1. The committed baseline starts with an empty "metrics" object, so
+#      the gate warns and passes (never blocks CI for missing data).
+#   2. Trigger this workflow with workflow_dispatch, download the
+#      bench-output artifact, and transcribe the bench-gate metric lines
+#      into tests/bench/baseline_linux.json.
+#   3. Commit the filled baseline (small PR). From then on every nightly
+#      run compares against it. Update the baseline deliberately (new
+#      run + PR) whenever a legitimate performance change lands.
+#   The procedure is documented in docs/perf_report_sinks.md as well.
+# ============================================================================
+
+name: Bench (nightly)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily 02:00 UTC: bench regression gate (staggered against the
+    # Monday 21:00 UTC TSan nightly in ci.yml).
+    - cron: '0 2 * * *'
+
+jobs:
+  bench-nightly:
+    name: bench regression gate (ubuntu)
+    # Pinned for the same reason as ci.yml's linux-smoke: runner image
+    # flips change the hardware/compiler and invalidate the baseline.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure (Release)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build benches
+        run: cmake --build build --target bench_log bench_sink -j 2
+      - name: Run benches
+        run: |
+          ./build/tests/bench_log 2>&1 | tee build/bench_log.txt
+          ./build/tests/bench_sink 2>&1 | tee build/bench_sink.txt
+      - name: Regression gate
+        run: >
+          python3 scripts/bench_gate.py
+          --baseline tests/bench/baseline_linux.json
+          --threshold 25
+          build/bench_log.txt build/bench_sink.txt
+      - name: Upload bench output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-output
+          path: |
+            build/bench_log.txt
+            build/bench_sink.txt
+          retention-days: 30

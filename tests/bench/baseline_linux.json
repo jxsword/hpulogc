@@ -1,0 +1,4 @@
+{
+  "comment": "Nightly bench regression baseline (D-R13). Metrics in ns, lower is better, from bench_log (amortized) and bench_sink (amortized scenarios) on ubuntu-24.04 GitHub runners. Empty 'metrics' means the baseline is not yet established: the gate warns and passes; bootstrap procedure in .github/workflows/bench_nightly.yml and docs/perf_report_sinks.md. Update deliberately (re-run + PR) when a legitimate perf change lands.",
+  "metrics": {}
+}

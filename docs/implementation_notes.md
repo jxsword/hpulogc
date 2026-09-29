@@ -639,3 +639,19 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | F-5 | 修饰符作用语义 | 修饰符作用于占位符**最终渲染结果**之后（`time format` 整体输出、JSON 转义后）；precision 按字节截断（回退写指针并恢复 truncated 标志）；width 空格填充，右对齐用"先写后 memmove 偏移"实现，`max_line` 内放不下时省略填充 | 避免为对齐引入逐占位符暂存缓冲（稳态零 malloc、无栈大缓冲）；代价：行尾逼近 `max_line` 时填充省略（行截断优先，规范已注明） |
 | F-6 | 长占位符匹配改裸名表 | `match_long_placeholder` 由含 '%' 前缀表改为裸名表（`msg` 等），使修饰符后可直接跟长名（`%20.30msg`） | 单表两用；无修饰符路径行为不变（`format_placeholders` 等既有用例守护，含 `%l` 不吞 `%line` 前缀场景） |
 | F-7 | 不引入 zlog `%ms`/`%us` 别名 | `%f` 保持唯一亚秒扩展（§12 已写入） | A.1 #7 共存结论为"若引入别名须在 §12 定义共存规则"——选择不引入，语义面更小 |
+
+# 外部轮转检测（rd_v0.6 v0.6.5）实现自由度登记
+
+> 任务书授权"实现自由度自定后登记"。节流参数 N、Win32 共享模式与
+> 夜间回归调度三个用户决策项见 decision_log D-R11/D-R12/D-R13；
+> 以下为实现层选择。
+
+| # | 自由度 | 决定 | 理由与代价 |
+|---|--------|------|-----------|
+| E-1 | 节流检测的原语方向 | 平台契约新增**两个**身份原语：`hpu_fs_fstat_id(fd)`（打开时记录 fd 身份）与 `hpu_fs_stat_id(path)`（周期检查读路径身份）；比对方向固定为 path 侧 vs fd 侧 | 初版误用 fd-vs-fd 比对——rename 不改变已打开描述符的 inode，检测永不触发（本地测试当场暴露）。WatchedFileHandler 语义要求路径侧读取才能看到替换；fd 侧记录保留是因为打开瞬间 path 可能已被再次替换，fd 身份才是权威 |
+| E-2 | 检测失败的语义 | 路径 stat 失败（文件被移走未重建、FAT 等无稳定索引文件系统）按"未知"处理：跳过本次检查、不误判、计数器照常复位 | 保守方向：宁可晚检测不可假重开；假重开会在 logrotate `create` 缺席的场景制造文件分裂。代价：移走未重建场景下写入继续进旧（已更名）文件 |
+| E-3 | 检测触发时的在途字节 | 触发条提交前先 `file_flush_locked`（在途字节属旧文件），再 close + `file_open_active`（新文件） | 与自轮转的"先 flush 再 rename"次序一致；`file_open_active` 内统一刷新身份记账，写失败 reopen-once 路径自动获益，无重复代码 |
+| E-4 | 节流计数器复位点 | 每次检查后复位（含检测触发、fstat 失败跳过）；所有 (re)open 路径经 `file_refresh_id_locked` 统一复位 | 自轮转完成后同样刷新（`file_emit_one_locked` 内 rotate 成功分支显式调用），保证自轮转永不被误判（D-R11/规范 §4.6 互斥条款）；复位点单一代码路径，无遗漏面 |
+| E-5 | 门禁指标集合 | 仅纳 amortized 类指标（bench_log amortized + bench_sink 五场景 avg ns/op）；throughput logs/sec 与 P50/P99 不入门禁 | 吞吐受调度噪声影响最烈（2C runner 上可达 ±30%），分位数受时钟粒度伪影污染（perf_report_sinks §7.4）；amortized 单时钟对最稳。代价：吞吐回归要靠人工复核 artifact 发现 |
+| E-6 | 夜间作业独立 workflow | bench 门禁放独立 `.github/workflows/bench_nightly.yml`（每日 02:00 UTC），ci.yml 不加 cron | 同 workflow 内多个 schedule 行会在任一 schedule 事件时全部触发——加进 ci.yml 会把周一 TSan 变每日跑；独立文件让两个夜间作业天然错峰、互不影响 |
+| E-7 | 基线缺失时的门禁行为 | `baseline_linux.json` 首版 `metrics` 为空对象，gate 告警放行（exit 0）+ artifact 上传 | bootstrap 期不阻塞 CI；流程固化在 workflow 注释与 perf_report_sinks §8.2，防止基线长期空置无人补 |

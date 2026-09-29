@@ -92,6 +92,49 @@ int hpu_fs_unlink(const char* path);
 hpu_fs_kind_t hpu_fs_stat_kind(const char* path);
 
 /**
+ * @brief Identity of an open file, stable across renames.
+ *
+ * Used by the throttled external-rotation check: comparing the identity
+ * recorded at open time with a fresh read detects that the path now refers
+ * to a different file (logrotate-style mv + recreate).
+ */
+typedef struct hpu_fs_file_id {
+    uint64_t dev; /*!< Device id (volume serial on Windows) */
+    uint64_t ino; /*!< Inode / file index */
+} hpu_fs_file_id_t;
+
+/**
+ * @brief Read the identity of an open file (throttled fstat primitive).
+ *
+ * Two descriptors (or a descriptor and a later re-open of the same path)
+ * refer to the same file iff both dev and ino compare equal.
+ *
+ * @param fd   Descriptor.
+ * @param out  Filled with the file identity on success.
+ * @return     0 on success, -1 on failure (errno set).
+ *
+ * @note On filesystems without stable per-file ids (e.g. FAT), the index
+ *       may be synthesized; callers treat a failed read as "unknown" and
+ *       skip the comparison rather than assuming a change.
+ */
+int hpu_fs_fstat_id(int fd, hpu_fs_file_id_t* out);
+
+/**
+ * @brief Read the identity of a file by path (external-rotation check).
+ *
+ * The external-rotation detector compares this with the identity recorded
+ * (via hpu_fs_fstat_id) when the descriptor was opened: a differing path
+ * identity means the path now refers to a different file. Renames of the
+ * open file itself do not change the descriptor's identity — only a
+ * path-based read can reveal the replacement.
+ *
+ * @param path  Path to inspect.
+ * @param out   Filled with the file identity on success.
+ * @return      0 on success, -1 on failure (errno set; missing path).
+ */
+int hpu_fs_stat_id(const char* path, hpu_fs_file_id_t* out);
+
+/**
  * @brief Current size of an open file (O(1), no reopen).
  * @param fd  Descriptor.
  * @return    Size in bytes, -1 on failure.

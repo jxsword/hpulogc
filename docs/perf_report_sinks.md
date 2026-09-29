@@ -132,3 +132,33 @@
 - **macOS P50=0 是时钟粒度伪影**：虚拟化环境下采样时钟分辨率不足，
   P50 失真；P99/P999 仍有参考价值。
 - CI runner 规格随时间漂移（镜像/硬件池），本表数据仅代表采集当日。
+
+## 8. 夜间性能回归门禁（v0.6.5 新增，D-R13）
+
+`.github/workflows/bench_nightly.yml` 每日 02:00 UTC（与 ci.yml 周一
+21:00 UTC 的 TSan 夜间作业错峰；独立 workflow 文件以避免 GitHub schedule
+事件触发无关 cron）在 ubuntu-24.04 上运行 bench_log（amortized）与
+bench_sink（全部场景 amortized），并由 `scripts/bench_gate.py` 与仓库内
+基线 `tests/bench/baseline_linux.json` 逐项比较：任一指标相对回退超过
+**25%** 即作业失败。纳入门禁的指标（均为越低越好）：
+
+- `bench_log_amortized_avg_ns`（bench_log amortized 平均单条 ns）
+- `bench_sink_{null1,null4,null8,file,file_async}_avg_ns`
+
+### 8.1 Runner 噪声与阈值
+
+共享 GitHub runner 的运行间波动约为 10–20%，25% 相对阈值用于吸收典型
+噪声：无法在手动 re-run（workflow_dispatch）中复现的红灯按噪声处理；
+可复现的持续回退是真回归，须在合并责任变更前查明。基线绑定
+ubuntu-24.04 pinned runner（与 ci.yml linux-smoke 同理，runner 镜像
+漂移会使基线失效）。
+
+### 8.2 基线建立（bootstrap）流程
+
+1. 首版基线的 `metrics` 为空对象——门禁此时告警放行，不阻塞 CI；
+2. 以 workflow_dispatch 触发一次 bench_nightly，下载 `bench-output`
+   artifact，把 bench-gate 打印的各指标数值转录进
+   `tests/bench/baseline_linux.json`；
+3. 小 PR 提交基线，此后每晚自动比较。基线更新遵循同等流程（新跑一次
+   + PR 转录），在合理的性能变更合入后主动刷新，并在 JSON `comment`
+   中注明更新原因。
