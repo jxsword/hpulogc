@@ -76,6 +76,7 @@ static int placeholder_type(char c)
     switch (c) {
     case 'l': return HPU_FA_LEVEL;
     case 't': return HPU_FA_TIME;
+    case 'g': return HPU_FA_TIME_UTC;
     case 'p': return HPU_FA_PID;
     case 'i': return HPU_FA_TID;
     case 'f': return HPU_FA_FILE;
@@ -88,7 +89,7 @@ static int placeholder_type(char c)
 }
 
 /**
- * @brief Match a long placeholder name at @p s.
+ * @brief Match a long placeholder name (without its '%') at @p s.
  * @return Action type, or -1 when no name matches.
  */
 static int match_long_placeholder(const char* s, size_t* len)
@@ -97,16 +98,16 @@ static int match_long_placeholder(const char* s, size_t* len)
         const char* name;
         int type;
     } table[] = {
-        { "%level",    HPU_FA_LEVEL },
-        { "%time",     HPU_FA_TIME },
-        { "%pid",      HPU_FA_PID },
-        { "%tid",      HPU_FA_TID },
-        { "%file",     HPU_FA_FILE },
-        { "%line",     HPU_FA_LINE },
-        { "%func",     HPU_FA_FUNC },
-        { "%msg",      HPU_FA_MSG },
-        { "%category", HPU_FA_CATEGORY },
-        { "%n",        HPU_FA_NEWLINE },
+        { "level",    HPU_FA_LEVEL },
+        { "time",     HPU_FA_TIME },
+        { "pid",      HPU_FA_PID },
+        { "tid",      HPU_FA_TID },
+        { "file",     HPU_FA_FILE },
+        { "line",     HPU_FA_LINE },
+        { "func",     HPU_FA_FUNC },
+        { "msg",      HPU_FA_MSG },
+        { "category", HPU_FA_CATEGORY },
+        { "n",        HPU_FA_NEWLINE },
     };
     size_t i;
 
@@ -114,11 +115,6 @@ static int match_long_placeholder(const char* s, size_t* len)
         size_t n = strlen(table[i].name);
 
         if (strncmp(s, table[i].name, n) == 0) {
-            /* "%l" must not swallow the prefix of "%line"/"%level" */
-            if (table[i].type == HPU_FA_LEVEL && strncmp(s, "%level", 6) == 0) {
-                *len = 6;
-                return HPU_FA_LEVEL;
-            }
             *len = n;
             return table[i].type;
         }
@@ -127,10 +123,89 @@ static int match_long_placeholder(const char* s, size_t* len)
 }
 
 /**
+ * @brief Parsed printf-style width/precision modifier (spec 12, v0.6.4).
+ */
+typedef struct fmt_modifier {
+    int    left;     /*!< '-' flag present (left-align) */
+    int    overflow; /*!< Parsed value exceeded HPU_FMT_MOD_LIMIT */
+    int    width;    /*!< Field width value (0 = absent) */
+    int    has_prec; /*!< Precision part present */
+    int    prec;     /*!< Precision value (max output bytes) */
+    size_t len;      /*!< Consumed bytes after '%' */
+} fmt_modifier_t;
+
+/**
+ * @brief Parse the modifier part of a placeholder: %[-][width][.prec].
+ *
+ * Only '-' is a valid flag; width/precision are decimal numbers capped at
+ * HPU_FMT_MOD_LIMIT (values beyond set @p overflow). Unsupported spellings
+ * (other flags, negative precision) fall out as either no-consumption or
+ * overflow, both of which the caller rejects.
+ *
+ * @param s  Position right after '%' (not consumed by the caller yet).
+ * @param m  Filled with the parsed parts.
+ * @return   Number of modifier bytes consumed (0 = plain placeholder).
+ */
+static size_t parse_modifier(const char* s, fmt_modifier_t* m)
+{
+    const char* q = s;
+
+    memset(m, 0, sizeof(*m));
+    if (*q == '-') {
+        m->left = 1;
+        q++;
+    }
+    while (*q >= '0' && *q <= '9') {
+        m->width = m->width * 10 + (*q - '0');
+        if (m->width > HPU_FMT_MOD_LIMIT) {
+            m->overflow = 1;
+        }
+        q++;
+    }
+    if (*q == '.') {
+        m->has_prec = 1;
+        q++;
+        while (*q >= '0' && *q <= '9') {
+            m->prec = m->prec * 10 + (*q - '0');
+            if (m->prec > HPU_FMT_MOD_LIMIT) {
+                m->overflow = 1;
+            }
+            q++;
+        }
+    }
+    m->len = (size_t)(q - s);
+    return m->len;
+}
+
+/**
+ * @brief Whether an action type accepts width/precision modifiers.
+ *
+ * Spec 12: only the ten value placeholders; %n / %% / %v reject them.
+ */
+static int modifier_supported(int type)
+{
+    switch (type) {
+    case HPU_FA_LEVEL:
+    case HPU_FA_TIME:
+    case HPU_FA_TIME_UTC:
+    case HPU_FA_PID:
+    case HPU_FA_TID:
+    case HPU_FA_FILE:
+    case HPU_FA_LINE:
+    case HPU_FA_FUNC:
+    case HPU_FA_MSG:
+    case HPU_FA_CATEGORY:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/**
  * @brief Append one action to the growing action sequence.
  */
 static int push_action(hpu_format_t* fmt, uint8_t type, uint32_t lit_off,
-                       uint32_t lit_len)
+                       uint32_t lit_len, const fmt_modifier_t* mod)
 {
     hpu_fmt_action_t* grown =
         realloc(fmt->actions, (fmt->action_count + 1) *
@@ -141,6 +216,13 @@ static int push_action(hpu_format_t* fmt, uint8_t type, uint32_t lit_off,
     }
     fmt->actions = grown;
     fmt->actions[fmt->action_count].type = type;
+    fmt->actions[fmt->action_count].flags = (uint8_t)
+        ((mod != NULL && mod->left ? HPU_FMT_MOD_LEFT : 0) |
+         (mod != NULL && mod->has_prec ? HPU_FMT_MOD_PREC : 0));
+    fmt->actions[fmt->action_count].width =
+        (uint16_t)(mod != NULL ? mod->width : 0);
+    fmt->actions[fmt->action_count].precision =
+        (uint16_t)(mod != NULL ? mod->prec : 0);
     fmt->actions[fmt->action_count].lit_off = lit_off;
     fmt->actions[fmt->action_count].lit_len = lit_len;
     fmt->action_count++;
@@ -200,9 +282,15 @@ static int json_splice_fields_action(hpu_format_t* fmt)
                     (fmt->action_count - i - 1) * sizeof(*fmt->actions));
             fmt->actions[i].lit_len = (uint32_t)k; /* prefix stays in place */
             fmt->actions[i + 1].type = (uint8_t)HPU_FA_FIELDS;
+            fmt->actions[i + 1].flags = 0;
+            fmt->actions[i + 1].width = 0;
+            fmt->actions[i + 1].precision = 0;
             fmt->actions[i + 1].lit_off = 0;
             fmt->actions[i + 1].lit_len = 0;
             fmt->actions[i + 2].type = (uint8_t)HPU_FA_LITERAL;
+            fmt->actions[i + 2].flags = 0;
+            fmt->actions[i + 2].width = 0;
+            fmt->actions[i + 2].precision = 0;
             fmt->actions[i + 2].lit_off = (uint32_t)suffix_off;
             fmt->actions[i + 2].lit_len = (uint32_t)suffix_len;
             fmt->action_count += 2;
@@ -230,18 +318,25 @@ int hpu_format_compile(hpu_format_t* fmt, const char* name,
 
     while (*p != '\0') {
         if (*p == '%') {
-            size_t name_len2 = 0;
-            int type = match_long_placeholder(p, &name_len2);
+            fmt_modifier_t mod;
+            size_t mod_len = parse_modifier(p + 1, &mod);
+            const char* body = p + 1 + mod_len;
+            size_t ph_len = 0;
+            int type = match_long_placeholder(body, &ph_len);
 
-            if (type < 0 && p[1] == '%') {
+            if (type < 0 && body[0] != '\0' && body[0] != '%') {
+                /* single-letter placeholder */
+                type = placeholder_type(body[0]);
+                ph_len = 1;
+            }
+            if (type < 0 && mod_len == 0 && body[0] == '%') {
                 p += 2; /* literal %% */
                 continue;
             }
-            if (type < 0 && p[1] != '\0') {
-                type = placeholder_type(p[1]);
-                name_len2 = 2;
-            }
-            if (type < 0) {
+            /* With modifiers the next token must be a supported value
+             * placeholder spelled within the modifier limits (spec 12). */
+            if (type < 0 || (mod_len > 0 &&
+                             (!modifier_supported(type) || mod.overflow))) {
                 rc = HPULOGC_ERR_CONFIG;
                 break;
             }
@@ -255,16 +350,18 @@ int hpu_format_compile(hpu_format_t* fmt, const char* name,
                     break;
                 }
                 if (push_action(fmt, (uint8_t)HPU_FA_LITERAL, off,
-                                (uint32_t)((size_t)(p - lit_start))) != 0) {
+                                (uint32_t)((size_t)(p - lit_start)),
+                                NULL) != 0) {
                     rc = HPULOGC_ERR_NO_MEM;
                     break;
                 }
             }
-            if (push_action(fmt, (uint8_t)type, 0, 0) != 0) {
+            if (push_action(fmt, (uint8_t)type, 0, 0,
+                            mod_len > 0 ? &mod : NULL) != 0) {
                 rc = HPULOGC_ERR_NO_MEM;
                 break;
             }
-            p += name_len2;
+            p += 1 + mod_len + ph_len;
             lit_start = p;
             continue;
         }
@@ -278,7 +375,8 @@ int hpu_format_compile(hpu_format_t* fmt, const char* name,
                         lit_start, (size_t)(p - lit_start)) != 0) {
             rc = HPULOGC_ERR_NO_MEM;
         } else if (push_action(fmt, (uint8_t)HPU_FA_LITERAL, off,
-                               (uint32_t)((size_t)(p - lit_start))) != 0) {
+                               (uint32_t)((size_t)(p - lit_start)),
+                               NULL) != 0) {
             rc = HPULOGC_ERR_NO_MEM;
         }
     }
@@ -520,12 +618,19 @@ static void render_frac(render_buf_t* b, int64_t sub_ns, int digits)
 
 /**
  * @brief Render the time placeholder using the per-second cache.
+ *
+ * @param use_utc  Non-zero renders UTC (the %g placeholder), zero follows
+ *                 the configured timezone (env->use_utc).
  */
 static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
-                        const hpu_fmt_env_t* env, hpu_fmt_cache_t* cache)
+                        const hpu_fmt_env_t* env, hpu_fmt_cache_t* cache,
+                        int use_utc)
 {
+    hpu_fmt_cache_slot_t* slot = &cache->slot[use_utc ? 1 : 0];
+
     if (env->timestamp_source == HPULOGC_TS_MONOTONIC) {
-        /* Fixed seconds.microseconds relative to init (spec 12). */
+        /* Fixed seconds.microseconds relative to init (spec 12); the same
+         * output for %time and %g (UTC is meaningless for monotonic). */
         int64_t rel_us = rec->mono_us - env->mono_base_us;
         char tmp[48];
 
@@ -543,7 +648,7 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
         int64_t sec = rec->realtime_ns / 1000000000LL;
         int64_t sub_ns = rec->realtime_ns % 1000000000LL;
 
-        if (!cache->valid || cache->cached_sec != sec) {
+        if (!slot->valid || slot->cached_sec != sec) {
             const char* tf = env->time_format != NULL
                                  ? env->time_format
                                  : "%Y-%m-%d %H:%M:%S.%f";
@@ -554,7 +659,7 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
 
             /* Platform contract conversion (works on POSIX and Windows);
              * epoch_sec is seconds since the Unix epoch. */
-            hpu_localtime(sec, &htm, env->use_utc);
+            hpu_localtime(sec, &htm, use_utc);
             memset(&tm_buf, 0, sizeof(tm_buf));
             tm_buf.tm_year = htm.year - 1900;
             tm_buf.tm_mon  = htm.mon - 1;
@@ -566,8 +671,8 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
             tm_buf.tm_yday = htm.yday;
             tm_buf.tm_isdst = 0;
 
-            cache->prefix_len = 0;
-            cache->suffix_len = 0;
+            slot->prefix_len = 0;
+            slot->suffix_len = 0;
 
             if (frac_idx >= 0) {
                 /* Render the prefix and suffix separately (both belong to
@@ -583,28 +688,28 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
                     pfmt[pre] = '\0';
                     memcpy(sfmt, tf + pre + spec_len, suf);
                     sfmt[suf] = '\0';
-                    cache->prefix_len =
-                        strftime(cache->prefix, sizeof(cache->prefix),
+                    slot->prefix_len =
+                        strftime(slot->prefix, sizeof(slot->prefix),
                                  pfmt, &tm_buf);
-                    cache->prefix[cache->prefix_len] = '\0';
-                    cache->suffix_len =
-                        strftime(cache->suffix, sizeof(cache->suffix),
+                    slot->prefix[slot->prefix_len] = '\0';
+                    slot->suffix_len =
+                        strftime(slot->suffix, sizeof(slot->suffix),
                                  sfmt, &tm_buf);
-                    cache->suffix[cache->suffix_len] = '\0';
+                    slot->suffix[slot->suffix_len] = '\0';
                 }
             } else {
-                size_t n = strftime(cache->prefix, sizeof(cache->prefix),
+                size_t n = strftime(slot->prefix, sizeof(slot->prefix),
                                     tf, &tm_buf);
 
-                cache->prefix_len = n;
-                cache->prefix[n] = '\0';
-                cache->suffix_len = 0;
+                slot->prefix_len = n;
+                slot->prefix[n] = '\0';
+                slot->suffix_len = 0;
             }
-            cache->cached_sec = sec;
-            cache->valid = 1;
+            slot->cached_sec = sec;
+            slot->valid = 1;
         }
 
-        rb_append(b, cache->prefix, cache->prefix_len);
+        rb_append(b, slot->prefix, slot->prefix_len);
         {
             int digits = 0;
 
@@ -613,7 +718,7 @@ static void render_time(render_buf_t* b, const hpu_log_record_t* rec,
                                    : "%Y-%m-%d %H:%M:%S.%f",
                                &digits) >= 0) {
                 render_frac(b, sub_ns, digits > 0 ? digits : 6);
-                rb_append(b, cache->suffix, cache->suffix_len);
+                rb_append(b, slot->suffix, slot->suffix_len);
             }
         }
     }
@@ -906,6 +1011,47 @@ size_t hpu_fields_unpack(const uint8_t* wire, size_t len, uint16_t count,
     return n;
 }
 
+/**
+ * @brief Apply width/precision modifiers to a rendered placeholder.
+ *
+ * Spec 12 (v0.6.4): precision truncates the content to at most that many
+ * bytes (the excess bytes are rewound - later appends overwrite them, and
+ * the line-truncated flag they may have raised is rolled back); width pads
+ * with spaces, right-aligned by default and left-aligned with the '-'
+ * flag. Padding is skipped when it would push the line past the
+ * truncation threshold.
+ *
+ * @param b          Line buffer (content for this action already written).
+ * @param start      Buffer position where this action's content began.
+ * @param pre_trunc  Value of b->truncated before the content was written.
+ * @param a          The action carrying the modifier fields.
+ */
+static void modifier_finish(render_buf_t* b, size_t start, int pre_trunc,
+                            const hpu_fmt_action_t* a)
+{
+    size_t written = b->len - start;
+
+    if ((a->flags & HPU_FMT_MOD_PREC) != 0 && written > a->precision) {
+        b->len = start + a->precision;
+        written = a->precision;
+        b->truncated = pre_trunc;
+    }
+    if (a->width != 0 && written < (size_t)a->width) {
+        size_t pad = (size_t)a->width - written;
+
+        if ((a->flags & HPU_FMT_MOD_LEFT) != 0) {
+            if (b->len + pad <= b->limit) {
+                memset(b->p + b->len, ' ', pad);
+                b->len += pad;
+            }
+        } else if (start + written + pad <= b->limit) {
+            memmove(b->p + start + pad, b->p + start, written);
+            memset(b->p + start, ' ', pad);
+            b->len += pad;
+        }
+    }
+}
+
 int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
                       const hpu_fmt_env_t* env, hpu_fmt_cache_t* cache,
                       int escape_injection, size_t max_line,
@@ -930,6 +1076,8 @@ int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
 
     for (i = 0; i < fmt->action_count; i++) {
         const hpu_fmt_action_t* a = &fmt->actions[i];
+        size_t start = b.len;
+        int pre_trunc = b.truncated;
 
         switch (a->type) {
         case HPU_FA_LITERAL:
@@ -941,7 +1089,10 @@ int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
             }
             break;
         case HPU_FA_TIME:
-            render_time(&b, rec, env, cache);
+            render_time(&b, rec, env, cache, env->use_utc);
+            break;
+        case HPU_FA_TIME_UTC:
+            render_time(&b, rec, env, cache, 1);
             break;
         case HPU_FA_PID:
             if (fmt->is_json) {
@@ -1012,6 +1163,10 @@ int hpu_format_render(const hpu_format_t* fmt, const hpu_log_record_t* rec,
             break;
         default:
             break;
+        }
+
+        if (a->flags != 0 || a->width != 0) {
+            modifier_finish(&b, start, pre_trunc, a);
         }
     }
 

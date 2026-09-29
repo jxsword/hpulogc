@@ -1250,8 +1250,10 @@ signal reload = false
 #   rendered = "%time [%level] %msg %v%n"
 #
 # 模板值为 = 后整行，建议用双引号包裹。
-# 可用占位符：%level %time %pid %tid %file %line %func %msg %category %n %%
+# 可用占位符：%level %time %g %pid %tid %file %line %func %msg %category %n %%
 #             %v（结构化字段 k=v 列表，§4.11.5；json 格式自动追加 fields 成员）
+#             %g 为 UTC 时间占位符（§12）；printf 风格宽度/精度修饰符
+#             （如 %-20.30msg）仅限值占位符，支持范围见 §12
 # ============================================================================
 [formats]
 
@@ -1358,8 +1360,16 @@ burst size = 100
 # level 匹配：
 #   *          所有级别
 #   LEVEL      精确匹配（如 TRACE）
+#   !LEVEL     取反匹配：除该精确级别外的所有级别（如 !INFO 匹配除精确
+#              INFO 外的全部级别）。`!` 仅可前缀单个级别名；`!*`、`!A~B`、
+#              裸 `!` 均为配置错误（§10.4）
 #   A~B        范围匹配，含端点（如 ERROR~FATAL 表示 ERROR 及以上）；
 #              min > max 为配置错误（§10.4）
+#
+#   注（与 zlog 的语义差异，规范性）：本文 LEVEL 为精确匹配语义；zlog 的
+#   裸 LEVEL 为 ≥（至少该级别）语义，`=LEVEL` 为精确、`!LEVEL` 为取反。
+#   本文不提供 ≥ 语义与 `=LEVEL` 词法，`!LEVEL` 亦基于精确语义取反
+#   （附录 A.1 #6）
 #
 # 匹配语义（规范性，zlog 风格，纯顺序）：
 #   - 从上到下扫描，第一条 category 匹配且 level 落在范围内的规则生效
@@ -1377,6 +1387,7 @@ security.* = json, audit_log, console_err
 db.WARN~FATAL = standard, main_log
 net.ERROR~FATAL = detailed, error_log, console_err
 *.ERROR~FATAL = detailed, error_log
+svc.*.!INFO = standard, console_out
 app.* = categorized, main_log
 *.* = standard, console_out
 
@@ -1423,6 +1434,8 @@ stats output = stderr
 | (db.query, ERROR) | `db.WARN~FATAL` | main_log（db 规则在前，优先命中） |
 | (net.sock, ERROR) | `net.ERROR~FATAL` | error_log + console_err |
 | (security.login, TRACE) | `security.*` | audit_log + console_err |
+| (svc.auth, WARN) | `svc.*.!INFO` | console_out（`!INFO` 匹配除精确 INFO 外的所有级别） |
+| (svc.auth, INFO) | `*.*` | console_out（`!INFO` 不匹配精确 INFO，落到兜底规则） |
 | (ui.render, INFO) | `*.*` | console_out |
 
 ### 10.4 配置解析器行为约束
@@ -1440,6 +1453,7 @@ stats output = stderr
 | `[rules]` 中的同名键 | 允许（即多条规则），按出现顺序生效 |
 | `[global]`/`[buffer]`/`[async]`/`[throttle]`/`[advanced]` 中重复键 | 后值覆盖前值 + stderr 警告 |
 | rule 的 min level > max level | 启动失败，返回 `HPULOGC_ERR_CONFIG` |
+| rule 的 level 部分为 `!*`、裸 `!`、`!A~B` 或 `!` 后非合法级别名（§10.3 取反词法的非法形态） | 启动失败，返回 `HPULOGC_ERR_CONFIG`，报行号 |
 | 两个及以上 file output 的路径（规范化后）相同 | 启动失败，返回 `HPULOGC_ERR_CONFIG` |
 | `rotate naming` 模板既不含 `{index}` 也不含 `{timestamp}` | 启动失败，返回 `HPULOGC_ERR_CONFIG` |
 | sinks（outputs）数量 > `HPULOGC_MAX_SINKS`（别名 `HPULOGC_MAX_OUTPUTS`，16）或 rules 条数 > `HPULOGC_MAX_RULES` | 启动失败，返回 `HPULOGC_ERR_CONFIG` |
@@ -1505,6 +1519,8 @@ stats output = stderr
 | 属性 | 说明 |
 |------|------|
 | 时间戳源 | `CLOCK_REALTIME`（默认）或 `CLOCK_MONOTONIC`（`%time` 固定输出相对 init 的"秒.微秒"，`time format` 忽略） |
+| UTC 时间占位符 `%g` | 按 `global.time format` 渲染 **UTC** 时间，忽略 `timezone` 设置；`time format` 内的 `%f`（微秒）/`%Fn`（毫秒）扩展同样生效；`CLOCK_MONOTONIC` 源下与 `%time` 输出一致（固定"秒.微秒"，UTC 无意义）。不引入 zlog 的 `%ms`/`%us` 别名——`%f` 为本文唯一的亚秒扩展（A.1 #7 共存结论） |
+| 占位符修饰符 | printf 风格 `%[-][width][.precision]`，**仅支持**以下 10 个值占位符：`%level` `%time` `%g` `%pid` `%tid` `%file` `%line` `%func` `%msg` `%category`。`width` 为最小字段宽（空格填充，默认右对齐，`-` 为左对齐）；`precision` 为最大输出字节数（超长按**字节**截断，不做 UTF-8 感知）。`-` 为唯一合法 flag（`0`/`+` 等均为配置错误）；width/precision 取值 0–128，越界为配置错误；`%n`/`%%`/`%v` 不支持修饰符（配置错误）。修饰符作用于占位符**最终渲染结果**之后（`%time`/`%g` 含 `time format` 整体输出、json 转义之后），不参与时间按秒缓存。未列明的修饰符组合一律不支持（§10.4 配置错误） |
 | 时区 | 本地（默认）或 UTC |
 | 编码 | 统一 UTF-8；Windows 下 `wchar_t` → UTF-8 |
 | 源码位置 | `__FILE__`/`__LINE__`/`__func__`；编译期 `HPULOGC_ENABLE_SOURCE_LOC=OFF` 或运行时 `capture source loc = false` 时 `%file`/`%line`/`%func` 展开为空串 |
@@ -1671,8 +1687,8 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 3 | level_enabled 检查 API | `zlog_level_enabled(cat, level)` + `zlog_fatal_enabled(cat)` 等宏 + printf format 属性（编译期检查格式串） | 无对应 API | **建议采纳**（P1）：`hpulogc_level_enabled(category, level)`、`HPULOGC_xxx_ENABLED(cat)` 宏、便捷宏加 format 属性；避免调用方为被过滤日志做昂贵的参数构造 | **已决策：采纳**；规范定义见 §4.1"级别启用查询"与 §7.3，实现排期见仓库 todo.md（D-R4：仅级别过滤语义、未初始化恒 0） |
 | 4 | 配置校验 CLI | 附带 `zlog-chk-conf` 独立校验工具（CI 可用） | 无 | **建议采纳**（P2）：`hpulogc_chk_conf`，退出码报告错误行号 | **已决策：采纳**；规范定义见 §7.3（`hpulogc_conf_validate`）与 §11（CLI），实现排期见 todo.md（D-R5：公共 API + CLI 薄壳） |
 | 5 | 外部轮转检测 | 静态文件输出每条 `stat` 比对 inode/dev，检测外部 logrotate 换文件后重开（WatchedFileHandler 语义） | 仅"运行期写失败时重开一次"（§9） | zlog 每条 `stat` 有可测开销（与 §4.6 O(1) 检查要求冲突）；建议**节流采纳**（每 N 条 + 写失败时比对 inode）或保持现状 | **已决策：采纳（节流方案：每 N 条 + 写失败时比对 inode）**，排期见 todo.md（中期） |
-| 6 | `!LEVEL` 取反匹配 | 规则级别支持裸 `LEVEL`（≥ 语义）、`=LEVEL`（精确）、`!LEVEL`（除该级别外）、`*` | `*` / `LEVEL`（精确）/ `A~B`（范围） | `!LEVEL` 语法成本低、表达力补充，**建议采纳**；注意 zlog 裸 LEVEL 为 ≥ 语义，与本文"精确"不同，若采纳需保持本文语义并标注 | **已决策：采纳（保持本文"精确"语义并在 §10.3 标注）**，排期见 todo.md |
-| 7 | 格式占位符扩展 | `%d`/`%g`（本地/UTC 时间）、`%ms`/`%us`、`%k`（系统级 tid）、`%H`（主机名）、`%F`/`%f`（全/短文件名）、printf 宽度/精度修饰符（`%-20.30c`） | 9 个占位符 + `%f` 微秒扩展（§10.3/§12） | **建议至少采纳** `%g`（UTC 时间）与宽度/精度修饰符；`%k`/`%H`/短文件名低优先；本文 `%f` 与 zlog `%ms`/`%us` 语义重叠，若引入别名须在 §12 定义共存规则 | **已决策：采纳（至少 `%g` 与宽度/精度修饰符）**，排期见 todo.md |
+| 6 | `!LEVEL` 取反匹配 | 规则级别支持裸 `LEVEL`（≥ 语义）、`=LEVEL`（精确）、`!LEVEL`（除该级别外）、`*` | `*` / `LEVEL`（精确）/ `A~B`（范围） | `!LEVEL` 语法成本低、表达力补充，**建议采纳**；注意 zlog 裸 LEVEL 为 ≥ 语义，与本文"精确"不同，若采纳需保持本文语义并标注 | **已决策：采纳（保持本文“精确”语义并在 §10.3 标注）**，排期见 todo.md；**已落地 v0.6.4（§10.3/§10.4）** |
+| 7 | 格式占位符扩展 | `%d`/`%g`（本地/UTC 时间）、`%ms`/`%us`、`%k`（系统级 tid）、`%H`（主机名）、`%F`/`%f`（全/短文件名）、printf 宽度/精度修饰符（`%-20.30c`） | 9 个占位符 + `%f` 微秒扩展（§10.3/§12） | **建议至少采纳** `%g`（UTC 时间）与宽度/精度修饰符；`%k`/`%H`/短文件名低优先；本文 `%f` 与 zlog `%ms`/`%us` 语义重叠，若引入别名须在 §12 定义共存规则 | **已决策：采纳（至少 `%g` 与宽度/精度修饰符）**，排期见 todo.md；**已落地 v0.6.4（§10.3/§12：`%g` + 宽度/精度修饰符；`%ms`/`%us` 别名不引入）** |
 | 8 | 用户自定义级别 | `[levels]` 节自定义级别（`NAME = int[, syslog_level]`），内置级别含 NOTICE | 固定 7 级枚举（§4.1/§7.6，ABI 冻结） | **建议不引入**（级别集稳定性优先、API 简单）；如确需再评估运行时注册制 | **已决策：不采纳**（见 A.2 #6） |
 | 9 | MDC | 每线程 MDC（put/get/remove + `%M(key)` 占位符） | 无 | **建议不引入**（异步模式下 MDC 属生产者线程上下文，跨线程传递语义复杂；请求级上下文建议调用方自行并入 `%msg`） | **已决策：不采纳**（见 A.2 #7） |
 | 10 | record / syslog / pipe 输出 | `$record` 回调、`>syslog[,facility]`（级别映射）、`\|pipe`（popen） | v0.6：syslog 已作为内置 sink 引入（§4.7.1，单实例限制）；record 回调由 **sink 契约**（§4.10.5）覆盖（自定义 sink 可对接任意收集系统）；pipe 不引入（popen 子进程管理复杂） | **已决策（v0.6）**：syslog 内置、record 语义由自定义 sink 承载、pipe 不引入 | 已决策 |
@@ -1825,6 +1841,31 @@ docs/decision_log.md D-S1..S7）**：
    "翻转即时生效、无需重开资源"的机理（资源常开）随之明示。
 3. §7.4 诊断条款更新：错误字符串查询 API 由"本版本不提供"改为已提供
    （指向 §7.3）。
+### v0.6.4（2026-09-29）
+
+规则词法取反匹配与占位符扩展（任务来源附录 A.1 #6/#7——已决策采纳，
+仓库 todo.md 二 排期，工单「#6 `!LEVEL` 取反匹配 + #7 占位符扩展」）。
+规范先行增补，实现随后：
+
+1. §10.3 规则词法新增 `!LEVEL`（规范性）：取反匹配——匹配**除该精确
+   级别外**的所有级别，保持本文 LEVEL 精确语义基线；与 zlog 的语义差异
+   在 §10.3 明示标注（zlog 裸 LEVEL 为 ≥ 语义、`=LEVEL` 为精确，本文均
+   不提供）。`!` 仅可前缀单个级别名，`!*`/`!A~B`/裸 `!` 为配置错误
+   （§10.4 同步新增错误行）；可与 selector 形态组合（如 `svc.*.!INFO`，
+   以最后一个 '.' 分割 selector 与 level 部分）；§10.3 模板示例规则与
+   §10.3.1 命中示例表同步新增 `svc.*.!INFO` 行（A.1 #6）。
+2. §12 新增 `%g` UTC 时间占位符（规范性）：按 `time format` 渲染 UTC
+   时间，忽略 `timezone` 设置；`time format` 内 `%f`/`%Fn` 亚秒扩展同样
+   生效；`CLOCK_MONOTONIC` 源下与 `%time` 输出一致；不引入 zlog 的
+   `%ms`/`%us` 别名，`%f` 为唯一亚秒扩展（A.1 #7 共存结论）。
+3. §12 新增占位符宽度/精度修饰符（规范性）：printf 风格
+   `%[-][width][.precision]`，支持范围钉死为 10 个值占位符（`%level`
+   `%time` `%g` `%pid` `%tid` `%file` `%line` `%func` `%msg` `%category`）；
+   `-` 为唯一合法 flag，width/precision 取值 0–128；precision 按字节
+   截断（非 UTF-8 感知）；修饰符作用于最终渲染结果（json 转义后），
+   不参与时间按秒缓存；`%n`/`%%`/`%v` 不支持，未列明组合一律配置错误
+   （§10.4）（A.1 #7）。
+4. §10.3 `[formats]` 占位符清单注释同步 `%g` 与修饰符说明。
 
 ---
 

@@ -624,3 +624,18 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | 编号 | 位置 | 描述/现象 | 修复/处理 |
 |------|------|-----------|-----------|
 | P-6 | `src/core/consumer.c` `hpu_consumer_flush` / MPMC flush 握手（**已修**，PR #17） | ack 原为"跑过 idle 任务"的计数语义：MPMC 下消费者取走记录（head 推进 → 环空）后被抢占时，其他消费者 ack + 环空使 flusher 在记录仍在途时提前返回 OK（表象：written < accepted 且 dropped=0，sync 后补齐——记录未丢失，但 flush 语义失信）。拥塞复现 4/60 次 | 修复：ack 前置环空观察，每消费者只为自己背书（per-consumer ack 计数）；修复后拥塞用例 60/60 零失败；TSan 零竞争（缺陷为逻辑语义，非数据竞争）。CI 曾在两个不相关 PR 各触发一次（linux gcc / macos clang）。注记：`hpulogc_flush` 的 5 s 界限（shutdown_timeout_ms）在重载 runner 下仍可出现良性超时（ERR_IO），test_net_sinks 已加注释说明其级联表象（2026-09-29 main CI macos c99 lockfree MPSC 一次性观察，同 commit PR CI 与本地门禁全绿） |
+
+# `!LEVEL` 取反匹配与占位符扩展（rd_v0.6 v0.6.4）实现自由度登记
+
+> 任务书授权"实现自由度自定后登记"。缓存槽策略与修饰符支持范围的
+> 选项矩阵见 decision_log D-R8；以下为实现层选择。
+
+| # | 自由度 | 决定 | 理由与代价 |
+|---|--------|------|-----------|
+| F-1 | `!LEVEL` 的内部表示 | `hpu_conf_rule_t` 增加 `negate_level` 位（min=max=该级别）；级别匹配收敛为 `hpu_conf_rule_level_match()`（`pipeline.c` `route_lookup` 线性扫描与 `registry.c` `rule_for_level` 预计算共用） | "除该级别外"无法用单一 [min,max] 区间表达；公共 `hpulogc_rule_t` 不动（`!LEVEL` 仅为 INI 词法扩展，代码配置路径的 min/max 区间本就更强），append-only ABI 不变 |
+| F-2 | `!LEVEL` 组合形态界定 | `!` 仅允许前缀单个精确级别名；`!*`、裸 `!`、`!A~B` 为配置错误（§10.4 行） | "未列明不支持"基线；与 selector 形态的组合（`svc.*.!INFO`）由 selector/level 以最后一个 '.' 分割的正交性自然获得，无需新词法。实现中发现示例初稿 `svc.!INFO` 受 selector 精确匹配语义限制不命中子分类，规范与 conf_eg 已同步改为 `svc.*.!INFO` |
+| F-3 | `%g` 时间缓存槽策略 | TLS 缓存从单槽扩为双槽（`hpu_fmt_cache_t` 内 `slot[2]`：0=local、1=UTC）；`render_time` 按 use_utc 选槽，`%g` 恒用槽 1 | 同格式 `%time` 与 `%g` 并存互不污染；仍是每线程预分配、稳态零 malloc（§9）；弃共享槽位图（D-R8 选项 B）：两槽内容必然不同（时区不同），共享无收益 |
+| F-4 | 修饰符的动作编码 | `hpu_fmt_action_t` 增加 `flags`/`width`/`precision` 字段（私有结构 12→16 字节）；`json_splice_fields_action` 新增槽位显式清零 | 编译期一次解析，热路径零重解析（format.h 契约）；splice 重排后的新增动作不得携带 realloc 垃圾修饰符 |
+| F-5 | 修饰符作用语义 | 修饰符作用于占位符**最终渲染结果**之后（`time format` 整体输出、JSON 转义后）；precision 按字节截断（回退写指针并恢复 truncated 标志）；width 空格填充，右对齐用"先写后 memmove 偏移"实现，`max_line` 内放不下时省略填充 | 避免为对齐引入逐占位符暂存缓冲（稳态零 malloc、无栈大缓冲）；代价：行尾逼近 `max_line` 时填充省略（行截断优先，规范已注明） |
+| F-6 | 长占位符匹配改裸名表 | `match_long_placeholder` 由含 '%' 前缀表改为裸名表（`msg` 等），使修饰符后可直接跟长名（`%20.30msg`） | 单表两用；无修饰符路径行为不变（`format_placeholders` 等既有用例守护，含 `%l` 不吞 `%line` 前缀场景） |
+| F-7 | 不引入 zlog `%ms`/`%us` 别名 | `%f` 保持唯一亚秒扩展（§12 已写入） | A.1 #7 共存结论为"若引入别名须在 §12 定义共存规则"——选择不引入，语义面更小 |

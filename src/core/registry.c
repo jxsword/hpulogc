@@ -152,7 +152,7 @@ void hpu_registry_refresh_route(hpu_reg_entry_t* slot,
         for (i = 0; i < conf->rule_count; i++) {
             const hpu_conf_rule_t* r = &conf->rules[i];
 
-            if (r->min_level <= level && level <= r->max_level &&
+            if (hpu_conf_rule_level_match(r, level) &&
                 hpu_pipeline_selector_match(r->category, slot->name,
                                             slot->name_len)) {
                 slot->rule_for_level[level] = (int)i;
