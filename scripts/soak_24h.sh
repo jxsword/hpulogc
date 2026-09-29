@@ -105,7 +105,7 @@ for variant in "${VARIANTS[@]}"; do
     console_cap="$bdir/console_capture.log"
     : > "$console_cap"
     echo "[soak] launching $variant driver for ${DURATION}s ..."
-    nohup "$bdir/soak_driver" --config "$cfg" --duration "$DURATION" \
+    nohup "$bdir/tools/soak_driver" --config "$cfg" --duration "$DURATION" \
         --producers "$PRODUCERS" --rate-us "$RATE_US" \
         > "$bdir/driver.stdout.log" 2> "$console_cap" &
     pid=$!
