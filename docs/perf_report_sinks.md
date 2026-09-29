@@ -1,4 +1,4 @@
-# hpulogc 性能测试报告：多 Sink 分发开销（Phase 5 / Linux）
+# hpulogc 性能测试报告：多 Sink 分发开销（Phase 5 / Linux，跨平台补充见 §7）
 
 ## 1. 环境说明
 
@@ -79,6 +79,56 @@
 ## 6. 局限
 
 - WSL2 环境计时噪声 ±10%，绝对值仅供相对比较；
-- 未覆盖 Windows（MSVC）/macOS 的 sink 分发开销（CI 无有效基准
-  环境，沿用 Phase 2/3 惯例）；
+- ~~未覆盖 Windows（MSVC）/macOS 的 sink 分发开销~~（已补齐，见 §7
+  跨平台补充数据）；
 - 24h 压测为发布前门禁，非本次范围。
+
+## 7. 跨平台补充数据（Windows / macOS，2026-09-30）
+
+数据来源：GH Actions `bench_dispatch`（workflow_dispatch，非门禁作业），
+与 §2 相同口径（bench_sink / bench_log，Release，默认 MPSC，64B 消息）。
+原始输出见对应 run 的日志/artifact。
+
+### 7.1 环境
+
+| 项目 | Windows | macOS |
+|------|---------|-------|
+| runner | `windows-2025`（Azure VM） | `macos-26-arm64`（Apple M1 Virtual） |
+| CPU | AMD EPYC 7763，分配 2C/4T | Apple M1，分配 3 vCPU |
+| 编译器 | MSVC 19.51（`/O2`，Release） | AppleClang 21.0（`-O3`，Release） |
+| 构建 | 静态库，默认 MPSC，全内置 sink | 同左 |
+| 采集 | run 36604103000（2026-09-30） | 同左 |
+
+### 7.2 bench_sink（amortized ns/op / 吞吐 logs/sec）
+
+| 场景 | Windows amortized | Windows 吞吐 | macOS amortized | macOS 吞吐 |
+|------|------------------|--------------|-----------------|------------|
+| null1 | 380 | 2,381,605 | 204 | 4,117,291 |
+| null4 | 405 | 2,723,958 | 160 | 4,921,664 |
+| null8 | 357 | 2,856,121 | 360 | 4,022,241 |
+| file（同步） | 353 | 2,834,498 | 169 | 4,785,376 |
+| file_async | 453 | 2,580,331 | 235 | 3,733,577 |
+
+### 7.3 bench_log（管线基线）
+
+| 指标 | Windows | macOS |
+|------|---------|-------|
+| latency 1P：P50 / P99 / P999 (ns) | 300 / 500 / 800 | 0 / 1,000 / 6,000 |
+| latency 8P：P50 / P99 / P999 (ns) | 400 / 1,000 / 1,700 | 0 / 55,000 / 170,000 |
+| amortized (ns) | 268 | 416 |
+| 吞吐 (logs/sec) | 3,755,333 | 2,707,000 |
+| 内存增量 | 148 KB | 160 KB |
+
+### 7.4 解读与局限
+
+- **与 §3/§4 的相对结论一致**：两平台扇出（null1→null8）仍在计时噪声
+  内，file_async 生产者侧成本低于或接近 file——跨平台方向性结论不变。
+- **绝对值不可跨 runner 比较**：Windows runner 是 2C/4T 的 EPYC 虚拟
+  机、macOS 是 3 vCPU 的 M1 虚拟机，与 §1 的本地 275HX 不同档位；
+  绝对值仅供同平台内的相对比较。
+- **Windows 单次波动偏大**：file_async amortized（453）高于 file
+  （353）与 Linux 结论相反，属 2 核 VM 上单次运行的调度噪声（参考
+  §5 file_async 的机制分析），不构成回归证据。
+- **macOS P50=0 是时钟粒度伪影**：虚拟化环境下采样时钟分辨率不足，
+  P50 失真；P99/P999 仍有参考价值。
+- CI runner 规格随时间漂移（镜像/硬件池），本表数据仅代表采集当日。
