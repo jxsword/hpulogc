@@ -17,6 +17,14 @@
 /** @brief Pending byte threshold that forces a flush. */
 #define FLUSH_THRESHOLD (48U * 1024U)
 
+/**
+ * @brief Lines between external-rotation identity checks (spec 4.6).
+ *
+ * Fixed by D-R11: the check is a throttled fstat (amortized O(1)), not
+ * configurable — the detection delay is bounded by 1024 writes.
+ */
+static const uint64_t inode_check_every = 1024;
+
 /** @brief Test-only injection point (NULL = never fails). */
 int (*hpu_io_fail_hook)(int op, const char* path) = NULL;
 
@@ -35,11 +43,31 @@ typedef struct hpu_file_priv {
     int fd;                  /*!< Active descriptor, -1 when closed */
     int64_t file_size;       /*!< Active file size in bytes */
     int64_t next_boundary;   /*!< Next time bucket boundary (epoch sec) */
+    hpu_fs_file_id_t file_id; /*!< Identity at open (spec 4.6 detection) */
+    int has_file_id;         /*!< file_id valid (fstat may have failed) */
+    uint64_t lines_since_check; /*!< Lines committed since last identity check */
     uint64_t last_fsync_ns;  /*!< Last periodic fsync (monotonic ns) */
     size_t pending_lines;    /*!< Lines sitting in iobuf */
     char iobuf[HPU_OUT_IO_BUF_SIZE]; /*!< Pending write bytes */
     size_t iolen;            /*!< Pending byte count */
 } hpu_file_priv_t;
+
+/**
+ * @brief Refresh the recorded file identity (spec 4.6 detection bookkeeping).
+ *
+ * A failed read leaves has_file_id = 0: the check is skipped rather than
+ * misread as an external rotation. Also resets the throttle counter —
+ * called after every (re)open, including self-rotation.
+ */
+static void file_refresh_id_locked(hpu_file_priv_t* f)
+{
+    f->lines_since_check = 0;
+    if (f->fd < 0 || hpu_fs_fstat_id(f->fd, &f->file_id) != 0) {
+        f->has_file_id = 0;
+        return;
+    }
+    f->has_file_id = 1;
+}
 
 /**
  * @brief Open (or reopen) the active file and reset the size counter.
@@ -64,6 +92,7 @@ static int file_open_active(hpu_file_priv_t* f)
     if (f->file_size < 0) {
         f->file_size = 0;
     }
+    file_refresh_id_locked(f);
     return 0;
 }
 
@@ -326,11 +355,43 @@ static int file_emit_one_locked(hpulogc_sink_t* sink, hpu_file_priv_t* f,
                 /* Rotation failure: the line is lost. */
                 return -1;
             }
+            /* Self-rotation opened a new file: refresh the identity so the
+             * throttled check never misreads it as an external change. */
+            file_refresh_id_locked(f);
         }
     }
 #else
     (void)ts_sec;
 #endif
+    /* Throttled external-rotation check (spec 4.6): every 1024 lines read
+     * the identity of the path and compare it with the descriptor identity
+     * recorded at open time. Renaming the open file does not change the
+     * descriptor's identity, so only a path-based read can see a
+     * logrotate-style replacement; a mismatch means the path now refers
+     * to a different file — reopen before this line is committed, so the
+     * triggering line and everything after land in the new file. A failed
+     * read (missing path, exotic filesystem) is "unknown", not a change —
+     * skip. */
+    if (++f->lines_since_check >= inode_check_every) {
+        hpu_fs_file_id_t path_id;
+        int known;
+
+        f->lines_since_check = 0;
+        known = f->has_file_id && f->fd >= 0 &&
+                hpu_fs_stat_id(f->path, &path_id) == 0;
+        if (known && (path_id.dev != f->file_id.dev ||
+                      path_id.ino != f->file_id.ino)) {
+            /* Pending bytes belong to the old (renamed) file. */
+            if (file_flush_locked(sink, f) != 0) {
+                return -1;
+            }
+            hpu_fs_close(f->fd);
+            f->fd = -1;
+            if (file_open_active(f) != 0) {
+                return -1;
+            }
+        }
+    }
     if (f->fd < 0) {
         if (file_open_active(f) != 0) {
             return -1;
