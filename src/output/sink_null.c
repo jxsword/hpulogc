@@ -19,6 +19,18 @@ static void null_emit(hpulogc_sink_t* sink, const hpulogc_event_t* ev)
     (void)ev;
 }
 
+/**
+ * @brief The null sink discards the whole batch at zero cost; n is bounded
+ *        by the configured batch size, so the int cast cannot overflow.
+ */
+static int null_emit_batch(hpulogc_sink_t* sink,
+                           const hpulogc_event_t* const* evs, size_t n)
+{
+    (void)sink;
+    (void)evs;
+    return (int)n;
+}
+
 /** @brief null sink type (SYNC|ASYNC; no private data, no buffering). */
 static const hpulogc_sink_ops_t g_null_ops = {
     "null",
@@ -29,7 +41,7 @@ static const hpulogc_sink_ops_t g_null_ops = {
     NULL, /* init */
     NULL, /* start */
     null_emit,
-    NULL, /* emit_batch */
+    null_emit_batch,
     NULL, /* flush */
     NULL, /* sync */
     NULL, /* periodic */

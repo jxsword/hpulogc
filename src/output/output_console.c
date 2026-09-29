@@ -2,8 +2,11 @@
  * @file output_console.c
  * @brief Console sink (stdout/stderr, terminal-only ANSI color).
  *
- * Line buffering relies on stdio (full buffering when redirected), so no
- * extra batching buffer is needed here; the consumer flushes per batch.
+ * The async batch path coalesces whole lines into a preallocated buffer so
+ * one batch costs a single fwrite (a single stdio lock round-trip) instead
+ * of one per line; the sync path writes per event and relies on stdio
+ * buffering. Whole lines are never split across buffer boundaries
+ * (HPULOGC_CAP_LINE_ATOMIC).
  */
 
 #include "output.h"
@@ -13,6 +16,9 @@
 #include <string.h>
 
 #include "../platform/platform.h"
+
+/** @brief Coalesce buffer capacity for the batch path (bytes). */
+#define HPU_CONSOLE_COALESCE_CAP (64U * 1024U)
 
 #if HPULOGC_ENABLE_COLOR
 /** @brief ANSI color codes per level (whole-line coloring). */
@@ -38,6 +44,8 @@ typedef struct hpu_console_priv {
     int   want_stderr;      /*!< Configured: stream = stderr */
     int   want_color;       /*!< Configured: color = true */
     int   color;            /*!< Resolved: color codes are emitted */
+    char  coalesce[HPU_CONSOLE_COALESCE_CAP]; /*!< Batch merge buffer */
+    size_t coalesce_len;    /*!< Bytes pending in the merge buffer */
 } hpu_console_priv_t;
 
 static int console_configure(hpulogc_sink_t* sink, const char* key,
@@ -113,6 +121,117 @@ static int console_flush(hpulogc_sink_t* sink)
     return fflush(p->stream) == 0 ? 0 : -1;
 }
 
+/* Write one event's bytes straight to the stream (rare oversized-line
+ * fallback of the batch path); no accounting here — emit_batch reports
+ * failure through its return value (§4.10.6). */
+static int console_write_direct(const hpu_console_priv_t* p,
+                                const hpulogc_event_t* ev)
+{
+#if HPULOGC_ENABLE_COLOR
+    if (p->color && ev->level >= 0 && ev->level <= 5) {
+        fwrite(g_level_colors[ev->level], 1,
+               strlen(g_level_colors[ev->level]), p->stream);
+        fwrite(ev->line, 1, ev->line_len, p->stream);
+        fwrite(g_color_reset, 1, strlen(g_color_reset), p->stream);
+        return ferror(p->stream) ? -1 : 0;
+    }
+#else
+    (void)p;
+#endif
+    fwrite(ev->line, 1, ev->line_len, p->stream);
+    return ferror(p->stream) ? -1 : 0;
+}
+
+/* Drain the merge buffer with one fwrite; clears the pending length
+ * regardless of the outcome. */
+static int console_coalesce_flush(hpu_console_priv_t* p)
+{
+    if (p->coalesce_len != 0) {
+        fwrite(p->coalesce, 1, p->coalesce_len, p->stream);
+        p->coalesce_len = 0;
+        if (ferror(p->stream)) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Append one event (whole-line color span included) to the merge buffer;
+ * the caller guarantees size <= HPU_CONSOLE_COALESCE_CAP - coalesce_len. */
+static void console_coalesce_append(hpu_console_priv_t* p,
+                                    const hpulogc_event_t* ev)
+{
+#if HPULOGC_ENABLE_COLOR
+    if (p->color && ev->level >= 0 && ev->level <= 5) {
+        size_t cs_len = strlen(g_level_colors[ev->level]);
+
+        memcpy(p->coalesce + p->coalesce_len, g_level_colors[ev->level],
+               cs_len);
+        p->coalesce_len += cs_len;
+        memcpy(p->coalesce + p->coalesce_len, ev->line, ev->line_len);
+        p->coalesce_len += ev->line_len;
+        memcpy(p->coalesce + p->coalesce_len, g_color_reset,
+               strlen(g_color_reset));
+        p->coalesce_len += strlen(g_color_reset);
+        return;
+    }
+#endif
+    memcpy(p->coalesce + p->coalesce_len, ev->line, ev->line_len);
+    p->coalesce_len += ev->line_len;
+}
+
+/* Size in bytes one event occupies in the merge buffer. */
+static size_t console_event_size(const hpu_console_priv_t* p,
+                                 const hpulogc_event_t* ev)
+{
+#if HPULOGC_ENABLE_COLOR
+    if (p->color && ev->level >= 0 && ev->level <= 5) {
+        return strlen(g_level_colors[ev->level]) + ev->line_len +
+               strlen(g_color_reset);
+    }
+#else
+    (void)p;
+#endif
+    return ev->line_len;
+}
+
+/* Async batch path: merge whole lines and emit them with as few fwrite
+ * calls (stdio lock round-trips) as possible. Errors are batch-granular:
+ * stdio reports no per-event progress within one fwrite, so any error
+ * fails the whole batch (return 0; the core books the rest as failed). */
+static int console_emit_batch(hpulogc_sink_t* sink,
+                              const hpulogc_event_t* const* evs, size_t n)
+{
+    hpu_console_priv_t* p = hpulogc_sink_priv(sink);
+    size_t i;
+    int err = 0;
+
+    for (i = 0; i < n && err == 0; i++) {
+        const hpulogc_event_t* ev = evs[i];
+        size_t need = console_event_size(p, ev);
+
+        if (need > HPU_CONSOLE_COALESCE_CAP) {
+            /* Oversized line: drain the buffer first, then write it
+             * directly (never split a line, LINE_ATOMIC contract). */
+            err = console_coalesce_flush(p);
+            if (err == 0) {
+                err = console_write_direct(p, ev);
+            }
+        } else {
+            if (p->coalesce_len + need > HPU_CONSOLE_COALESCE_CAP) {
+                err = console_coalesce_flush(p);
+            }
+            if (err == 0) {
+                console_coalesce_append(p, ev);
+            }
+        }
+    }
+    if (err == 0) {
+        err = console_coalesce_flush(p);
+    }
+    return err != 0 ? 0 : (int)n;
+}
+
 /** @brief Console sink type (SYNC|ASYNC|LINE_ATOMIC; no fsync semantics). */
 static const hpulogc_sink_ops_t g_console_ops = {
     "console",
@@ -123,7 +242,7 @@ static const hpulogc_sink_ops_t g_console_ops = {
     console_init,
     NULL, /* start: no external resource */
     console_emit,
-    NULL, /* emit_batch: core loops emit */
+    console_emit_batch,
     console_flush,
     NULL, /* sync: no fsync semantics */
     NULL, /* periodic: no fsync bookkeeping */

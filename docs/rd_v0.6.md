@@ -272,7 +272,7 @@ sink 的**私有键**（逐项交给 `configure`）：
 
 | 键 | 含义 | 默认值 | 约束 |
 |----|------|--------|------|
-| `enabled` | 实例是否启用 | `true` | `false` 的实例**不打开、不参与路由**；热重载可翻转（翻转即时生效，不需要重开资源） |
+| `enabled` | 实例是否启用 | `true` | `false` 的实例**照常建立并打开资源（create→start 生命周期完整执行），事件在 deliver 层门禁处丢弃（不写出、不计入该实例任何统计）**；热重载可翻转（翻转即时生效、无需重开资源——资源常开正是其基础） |
 | `async` | 是否异步投递 | `off` | `on` 时该实例获得第二级队列 + 专属 worker（§4.10.6）；任意构建可用（含同步构建） |
 | `queue size` | 第二级队列字节容量 | 256KB（支持尺寸后缀） | 范围 64KB–16MB；仅 `async=on` 时有效，`async=off` 时给出该键为无害（告警忽略，lenient） |
 
@@ -842,6 +842,18 @@ typedef struct {
 } hpulogc_stats_t;
 int  hpulogc_get_stats(hpulogc_stats_t* stats);
 
+/* 错误描述（§7.4）：将 hpulogc_error_t 错误码转为人类可读的英文短描述。
+ * 错误码集 = hpulogc_error_t 全集（HPULOGC_OK(0)、ERR_INVALID_ARG(-1)、
+ * ERR_NO_MEM(-2)、ERR_IO(-3)、ERR_CONFIG(-4)、ERR_STATE(-5)）。
+ * 线程安全、无动态分配、无副作用，任意时刻可调用（不要求已初始化）。
+ * 成功时返回完整描述所需的字符数（不含 '\0'，snprintf 语义，D-R7）：
+ *   - buf != NULL：写入至多 len-1 字符并恒以 '\0' 结尾；缓冲区不足时
+ *     截断（截断可由 返回值 >= len 判定）；
+ *   - buf == NULL 且 len == 0：合法（长度查询，不写入）；
+ *   - buf == NULL 且 len != 0：返回 HPULOGC_ERR_INVALID_ARG，不写入。
+ * 未知 code 写入 "unknown error <code>"（返回值为其所需长度）。 */
+int  hpulogc_strerror(int code, char* buf, size_t len);
+
 /* 多 sink 体系（§4.10）：注册自定义 sink 类型（init 前单线程调用，类型名唯一）；
  * 读取 sink 实例统计；契约、生命周期与实现约束见 §4.10。 */
 int  hpulogc_sink_register(const hpulogc_sink_ops_t* ops);
@@ -898,7 +910,7 @@ void hpulogc_log_signal_safe(hpulogc_level_t level, const char* msg);
   - `HPULOGC_ERR_IO`：文件/设备 I/O 失败（init 时输出打开失败等）
   - `HPULOGC_ERR_CONFIG`：配置缺失、非法、值合法但被当前构建裁剪
   - `HPULOGC_ERR_STATE`：状态错误（未初始化、重复初始化、已 shutdown 后调用）
-- **诊断信息**：init/配置错误的详情（配置文件名、行号、失败原因）统一输出至 stderr；本版本不提供错误字符串查询 API（`hpulogc_strerror()` 列入 P2，§17）。
+- **诊断信息**：init/配置错误的详情（配置文件名、行号、失败原因）统一输出至 stderr；错误码的短描述可经 `hpulogc_strerror()` 查询（§7.3，v0.6.3 交付）。
 
 ### 7.5 生命周期语义
 
@@ -1797,6 +1809,22 @@ docs/decision_log.md D-S1..S7）**：
    `hpulogc_chk_conf` 实测）。
 5. §17 P1 行追加「网络型 sink（TCP/UDP）」。
 6. 笔误修正：§4.10.1 小节标题层级与编号（原误作「### 3.1」）。
+
+### v0.6.3（2026-09-29）
+
+错误描述 API（任务来源 §17 P2「`hpulogc_strerror` 错误描述 API」，todo.md
+工单）与 P-5 措辞闭环（implementation_notes P-5）。规范先行增补，实现随后：
+
+1. §7.3 新增 `hpulogc_strerror(code, buf, len)` 签名条目（规范性）：错误码
+   集为 `hpulogc_error_t` 全集（0/-1..-5）；线程安全、无动态分配、无副
+   作用、任意时刻可调用（不要求已初始化）；缓冲区不足语义按 snprintf
+   定案——截断写入并返回完整描述所需字符数（不含 `'\0'`），截断可由
+   返回值 >= len 判定（决策记录 D-R7：弃 ERANGE 语义，理由见决策日志）。
+2. §4.7.3 `enabled=false` 措辞按实现对齐（P-5 闭环）：实例照常建立并
+   打开资源，事件在 deliver 层门禁丢弃（不写出、不计入该实例统计）；
+   "翻转即时生效、无需重开资源"的机理（资源常开）随之明示。
+3. §7.4 诊断条款更新：错误字符串查询 API 由"本版本不提供"改为已提供
+   （指向 §7.3）。
 
 ---
 

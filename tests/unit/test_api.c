@@ -295,3 +295,87 @@ TEST(level_enabled_multithreaded)
     hpulogc_shutdown();
     hpu_test_unlink(g_logpath);
 }
+
+/* ---- hpulogc_strerror (rd_v0.6 §7.3, decision D-R7) ---- */
+
+TEST(strerror_all_codes)
+{
+    static const struct {
+        int         code;
+        const char* desc;
+    } cases[] = {
+        { HPULOGC_OK, "success" },
+        { HPULOGC_ERR_INVALID_ARG, "invalid argument" },
+        { HPULOGC_ERR_NO_MEM, "out of memory" },
+        { HPULOGC_ERR_IO, "I/O error" },
+        { HPULOGC_ERR_CONFIG, "configuration error" },
+        { HPULOGC_ERR_STATE, "invalid state" }
+    };
+    char buf[64];
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int need = hpulogc_strerror(cases[i].code, buf, sizeof(buf));
+        size_t want = strlen(cases[i].desc);
+
+        /* Return value = full required length (snprintf semantics). */
+        CHECK_EQ(need, (int)want);
+        /* Buffer content matches and is NUL-terminated. */
+        CHECK_EQ(buf[want], '\0');
+        CHECK(strcmp(buf, cases[i].desc) == 0);
+    }
+}
+
+TEST(strerror_truncation)
+{
+    char buf[8]; /* "invalid argument" needs 16 + NUL */
+    int need;
+
+    need = hpulogc_strerror(HPULOGC_ERR_INVALID_ARG, buf, sizeof(buf));
+    CHECK_EQ(need, 16);
+    /* Truncated but always NUL-terminated. */
+    CHECK_EQ(buf[7], '\0');
+    CHECK(strncmp(buf, "invalid", 7) == 0);
+    /* Truncation is detectable: ret >= len. */
+    CHECK(need >= (int)sizeof(buf));
+
+    /* Exact fit (len == need + 1) writes the full description. */
+    buf[0] = '\0';
+    need = hpulogc_strerror(HPULOGC_OK, buf, 8);
+    CHECK_EQ(need, 7);
+    CHECK(strcmp(buf, "success") == 0);
+}
+
+TEST(strerror_length_query_and_bad_args)
+{
+    char buf[32] = "untouched";
+
+    /* buf == NULL, len == 0: pure length query. */
+    CHECK_EQ(hpulogc_strerror(HPULOGC_ERR_STATE, NULL, 0), 13);
+    /* buf != NULL, len == 0: nothing may be written either. */
+    CHECK_EQ(hpulogc_strerror(HPULOGC_ERR_STATE, buf, 0), 13);
+    CHECK(strcmp(buf, "untouched") == 0);
+    /* buf == NULL with len != 0 is rejected. */
+    CHECK_EQ(hpulogc_strerror(HPULOGC_OK, NULL, 32), HPULOGC_ERR_INVALID_ARG);
+}
+
+TEST(strerror_unknown_code)
+{
+    char buf[64];
+    int need;
+
+    need = hpulogc_strerror(42, buf, sizeof(buf));
+    CHECK_EQ(need, 16);
+    CHECK(strcmp(buf, "unknown error 42") == 0);
+
+    need = hpulogc_strerror(-99, buf, sizeof(buf));
+    CHECK_EQ(need, 17);
+    CHECK(strcmp(buf, "unknown error -99") == 0);
+
+    /* Callable without the library initialized (stateless pure function);
+     * make sure the preceding tests left no instance behind. */
+    hpulogc_shutdown();
+    need = hpulogc_strerror(HPULOGC_ERR_STATE, buf, sizeof(buf));
+    CHECK_EQ(need, 13);
+    CHECK(strcmp(buf, "invalid state") == 0);
+}

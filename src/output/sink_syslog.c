@@ -142,7 +142,8 @@ static const hpulogc_sink_ops_t g_syslog_ops = {
     syslog_init,
     syslog_start,
     syslog_emit,
-    NULL, /* emit_batch */
+    NULL, /* emit_batch: SYNC-only type plus syslog(3) has no batch
+           * interface (docs/implementation_notes.md, freedom entry S-2) */
     NULL, /* flush: syslog(3) is unbuffered from the caller's view */
     NULL, /* sync */
     NULL, /* periodic */
