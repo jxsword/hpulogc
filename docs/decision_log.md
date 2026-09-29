@@ -427,3 +427,37 @@
   src/platform/win32/win32_watcher.c（RDC 后端 + 轮询回退 +
   运行时降级）、src/platform/win32/win32_platform.h 注释、
   docs/rd_v0.6.md §4.5/§16.2；热加载对外行为（§10.5）无变化。
+
+## D-R9 包管理 recipe 方案：vcpkg 先行（2026-09-29，工单「Windows watcher 原生化 + MinGW CI + 分发基准 + 包管理 recipe」第 0 步定案）
+
+- 背景：CMake `install(EXPORT)` + `hpulogcConfig.cmake.in` 分发骨架已
+  具备，但库未被任何包管理器收录，外部消费者需手写 add_subdirectory
+  或自造 port（todo P2"包管理 recipe"，rd_v0.6 §17/§16.3 预留）。目标：
+  消费者可用 `find_package(hpulogc)`，CI 冒烟验证全链路，README 分发
+  章节同步。
+- 选项：
+  - A. vcpkg——优点：与现有 CMake 安装零摩擦（直接消费 install 产物）；
+    契合主受众（Windows/MSVC，本会话刚补齐 Windows 侧）；微软官方维护，
+    manifest 模式改动量最小 / 缺点：消费面偏 Windows/CMake 用户；未进
+    官方 registry 前外部用户需 overlay 或等 upstream port PR / 代价：
+    1 个冒烟 CI 作业（约 +3–6 分钟）；portfile ~50 行；每个 release
+    同步 port 版本
+  - B. Conan——优点：跨平台消费面广（Linux/macOS/任意构建系统）；
+    Conan 2 recipe 自包含、可纯本地验证 / 缺点：主受众是 CMake 用户，
+    `conan install` 生成 toolchain 对纯 CMake 用户是额外概念；
+    Conan 2 recipe API 有学习与升级维护成本；CI 需 pip 装 conan /
+    代价：conanfile.py + test_package ~80–120 行；1 个冒烟作业；
+    recipe API 演进风险
+  - C. 两者都做——优点：覆盖全部消费人群；分发文档一次写全 / 缺点：
+    双份 recipe 版本长期同步、CI 分钟数翻倍；外部需求尚无证据 /
+    代价：2 个冒烟作业（+6–12 分钟/PR）
+- 结论：A（vcpkg 先行）。Conan 挂账 todo，待真实需求出现再补。
+- 理由：与库的 CMake-first 分发零摩擦、与 Windows 主受众契合、维护
+  成本最低；B 的概念成本对主受众偏高；C 在无外部需求证据前维护面
+  翻倍，属过度投入。
+- 影响：新增 `ports/hpulogc/{vcpkg.json,portfile.cmake,usage}`（overlay
+  port，REF/SHA512 随 release 同步 bump）、根 `vcpkg.json` +
+  `vcpkg-configuration.json`（仓库内 manifest 冒烟路径）、
+  `scripts/vcpkg_smoke/`（最小消费者工程）、
+  `.github/workflows/vcpkg_smoke.yml`（windows-2025 冒烟作业）、
+  README"安装与集成"章节 vcpkg 小节。
