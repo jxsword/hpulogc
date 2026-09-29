@@ -52,15 +52,16 @@ jobs:
       - name: Install hpulogc from overlay port (manifest mode)
         run: |
           $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
-          $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows'
+          $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows-static-md'
           & "$env:VCPKG_ROOT\vcpkg.exe" install
           exit $LASTEXITCODE
       - name: Configure consumer (find_package via vcpkg toolchain)
         run: |
           $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
-          $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows'
+          $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows-static-md'
           cmake -S scripts/vcpkg_smoke -B build-smoke -G Ninja `
-            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
           exit $LASTEXITCODE
       - name: Build and run consumer
         run: |

@@ -329,8 +329,10 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 ./vcpkg install --overlay-ports=/path/to/hpulogc/ports/hpulogc hpulogc
 ```
 
-随后正常使用 CMake config 包（vcpkg 工具链文件下 triplet 默认为
-x86-windows，x64 工程请显式指定 `x64-windows`）：
+随后正常使用 CMake config 包（hpulogc 的 shared 构建由自身的
+`HPULOGC_BUILD_SHARED` 选项管理，vcpkg 侧请使用静态链接 triplet
+`x64-windows-static-md`；vcpkg 默认 triplet 为 x86-windows，x64 工程
+务必显式指定）：
 
 ```cmake
 find_package(hpulogc CONFIG REQUIRED)

@@ -476,7 +476,11 @@ if(NOT HPULOGC_ENABLE_ROTATE)
     list(REMOVE_ITEM HPULOGC_CORE_SOURCES src/output/rotate.c)
 endif()
 
-add_library(hpulogc
+# Explicit STATIC: the shared variant is governed by HPULOGC_BUILD_SHARED
+# below (with the HPULOGC_BUILDING_DLL export path). Without the keyword a
+# consumer's BUILD_SHARED_LIBS=ON (e.g. vcpkg's dynamic triplets) would
+# silently turn this target into an export-less DLL.
+add_library(hpulogc STATIC
     ${HPULOGC_RING_SOURCE}
     ${HPULOGC_CORE_SOURCES}
     $<TARGET_OBJECTS:hpulogc_platform>
