@@ -373,7 +373,7 @@ static int file_emit_one_locked(hpulogc_sink_t* sink, hpu_file_priv_t* f,
      * read (missing path, exotic filesystem) is "unknown", not a change —
      * skip. */
     if (++f->lines_since_check >= inode_check_every) {
-        hpu_fs_file_id_t path_id;
+        hpu_fs_file_id_t path_id = { 0, 0 };
         int known;
 
         f->lines_since_check = 0;
