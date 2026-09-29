@@ -65,6 +65,10 @@ extern "C" {
 
 /**
  * @brief printf-format attribute wrapper (compile-time format string checks).
+ *
+ * For variadic functions pass (fmt_idx, first_va_idx). For va_list
+ * functions pass (fmt_idx, 0): 0 tells GCC/Clang that the checked argument
+ * is a single va_list parameter.
  */
 #ifndef HPULOGC_PRINTF
 #  if defined(__GNUC__) || defined(__clang__)
@@ -668,6 +672,33 @@ HPULOGC_API int hpulogc_set_level(hpulogc_level_t level);
 HPULOGC_API int hpulogc_set_level_for_category(const char* category,
                                                hpulogc_level_t level);
 
+/**
+ * @brief Query whether a category+level pair would pass the level filter.
+ *
+ * Level-enablement query (spec rd_v0.6 §4.1 "级别启用查询"). The return
+ * value mirrors the pipeline level-filter step only: the global threshold
+ * plus the per-category override, exactly as hpulogc_log() applies them.
+ * It does NOT predict routing fallbacks, rate limiting/sampling, ring
+ * overflow policy or per-sink enabled gates — returning non-zero only
+ * guarantees the record would pass the level filter, i.e. returning zero
+ * guarantees the record would be dropped there (no false negatives).
+ *
+ * The query is side-effect free: it never registers the category and never
+ * consumes throttle tokens or the sampling counter. Hot reload and
+ * hpulogc_set_level()/hpulogc_set_level_for_category() flips take effect
+ * for subsequent queries immediately. Thread-safe; may be called at any
+ * time.
+ *
+ * @param category  Category name; NULL/"" is judged as "*".
+ * @param level     Level to test; HPULOGC_LEVEL_OFF or invalid levels
+ *                  return 0 (they are dropped as record levels).
+ * @return          1 when the record would pass the level filter, 0
+ *                  otherwise (including uninitialized/after shutdown,
+ *                  where all write APIs silently drop).
+ */
+HPULOGC_API int hpulogc_level_enabled(const char* category,
+                                      hpulogc_level_t level);
+
 /* ---- Build information ---- */
 
 /**
@@ -760,7 +791,7 @@ HPULOGC_API void hpulogc_log(hpulogc_level_t level, const char* category,
  */
 HPULOGC_API void hpulogc_vlog(hpulogc_level_t level, const char* category,
                               const char* file, int line, const char* func,
-                              const char* fmt, va_list ap);
+                              const char* fmt, va_list ap) HPULOGC_PRINTF(6, 0);
 
 /**
  * @brief Write one log record with structured fields (§4.11.3).
@@ -788,7 +819,7 @@ HPULOGC_API void hpulogc_log_ex(hpulogc_level_t level, const char* category,
 HPULOGC_API void hpulogc_vlog_ex(hpulogc_level_t level, const char* category,
                                  const char* file, int line, const char* func,
                                  const hpulogc_field_t* fields, size_t field_count,
-                                 const char* fmt, va_list ap);
+                                 const char* fmt, va_list ap) HPULOGC_PRINTF(8, 0);
 
 /* ---- Multi-sink contract APIs (§4.10) ---- */
 
@@ -971,6 +1002,63 @@ HPULOGC_API void hpulogc_log_signal_safe(hpulogc_level_t level, const char* msg)
 #define HPULOGC_FATAL_EX(cat, flds, n, ...) HPULOGC__LOG_EX(HPULOGC_LEVEL_FATAL, cat, flds, n, __VA_ARGS__)
 #else
 #define HPULOGC_FATAL_EX(cat, flds, n, ...) ((void)0)
+#endif
+
+/* ---- Level-enablement gate macros (spec §4.1, decision D-R4) ---- */
+
+/**
+ * @def HPULOGC_TRACE_ENABLED(cat)
+ * @brief Non-zero when a TRACE record for @p cat would pass the level filter.
+ *
+ * Level-enablement gate macros: expand to hpulogc_level_enabled() with the
+ * respective level, intended for `if (HPULOGC_INFO_ENABLED("net")) { ... }`
+ * guards that skip expensive argument construction for filtered records.
+ * The macros carry no format string, so they are safe regardless of the
+ * variadic-macro backend. When HPULOGC_COMPILE_TIME_LEVEL trims a level,
+ * the matching gate macro expands to constant 0 (the corresponding
+ * HPULOGC_xxx macro is an empty statement, so the guard must be false).
+ * See hpulogc_level_enabled() for the exact semantics (level filter only,
+ * side-effect free, 0 when uninitialized).
+ */
+#if HPULOGC_COMPILE_TIME_LEVEL <= 0 /* TRACE */
+#define HPULOGC_TRACE_ENABLED(cat) hpulogc_level_enabled((cat), HPULOGC_LEVEL_TRACE)
+#else
+#define HPULOGC_TRACE_ENABLED(cat) 0
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 1 /* DEBUG */
+/** @brief Non-zero when a DEBUG record for @p cat passes the level filter. */
+#define HPULOGC_DEBUG_ENABLED(cat) hpulogc_level_enabled((cat), HPULOGC_LEVEL_DEBUG)
+#else
+#define HPULOGC_DEBUG_ENABLED(cat) 0
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 2 /* INFO */
+/** @brief Non-zero when an INFO record for @p cat passes the level filter. */
+#define HPULOGC_INFO_ENABLED(cat) hpulogc_level_enabled((cat), HPULOGC_LEVEL_INFO)
+#else
+#define HPULOGC_INFO_ENABLED(cat) 0
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 3 /* WARN */
+/** @brief Non-zero when a WARN record for @p cat passes the level filter. */
+#define HPULOGC_WARN_ENABLED(cat) hpulogc_level_enabled((cat), HPULOGC_LEVEL_WARN)
+#else
+#define HPULOGC_WARN_ENABLED(cat) 0
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 4 /* ERROR */
+/** @brief Non-zero when an ERROR record for @p cat passes the level filter. */
+#define HPULOGC_ERROR_ENABLED(cat) hpulogc_level_enabled((cat), HPULOGC_LEVEL_ERROR)
+#else
+#define HPULOGC_ERROR_ENABLED(cat) 0
+#endif
+
+#if HPULOGC_COMPILE_TIME_LEVEL <= 5 /* FATAL */
+/** @brief Non-zero when a FATAL record for @p cat passes the level filter. */
+#define HPULOGC_FATAL_ENABLED(cat) hpulogc_level_enabled((cat), HPULOGC_LEVEL_FATAL)
+#else
+#define HPULOGC_FATAL_ENABLED(cat) 0
 #endif
 
 /** @} */
