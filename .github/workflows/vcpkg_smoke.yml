@@ -61,7 +61,8 @@ jobs:
           $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows-static-md'
           cmake -S scripts/vcpkg_smoke -B build-smoke -G Ninja `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+            -DVCPKG_MANIFEST_DIR=${{ github.workspace }}
           exit $LASTEXITCODE
       - name: Build and run consumer
         run: |
