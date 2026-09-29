@@ -110,6 +110,9 @@ int hpu_net_dgram_open(const void* addr, size_t addrlen)
     SOCKET s;
     u_long mode = 1; /* FIONBIO: non-blocking */
 
+    /* Unconnected socket: the caller passes the address per datagram. */
+    (void)addrlen;
+
     if (winsock_ensure() != 0) {
         return -1;
     }
