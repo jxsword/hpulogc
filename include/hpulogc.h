@@ -561,6 +561,29 @@ typedef enum {
     HPULOGC_ERR_STATE       = -5  /*!< State error (uninitialized, double init, called after shutdown) */
 } hpulogc_error_t;
 
+/* ---- Error description ---- */
+
+/**
+ * @brief Convert an hpulogc error code into a human-readable description.
+ *
+ * Thread-safe, allocation-free and side-effect free; callable at any time
+ * (the library does not need to be initialized). On success returns the
+ * number of characters the full description requires, excluding the
+ * terminating '\0' (snprintf semantics, rd_v0.6 §7.3 / decision D-R7):
+ * when @p buf is non-NULL at most len-1 characters are written and the
+ * result is always '\0'-terminated; a return value >= len means the
+ * description was truncated.
+ *
+ * @param code  Error code (any hpulogc_error_t value or 0; unknown codes
+ *              yield "unknown error <code>").
+ * @param buf   Destination buffer; may be NULL only when len == 0
+ *              (length query, nothing is written).
+ * @param len   Size of @p buf in bytes.
+ * @return      Required character count (excluding '\0') on success;
+ *              HPULOGC_ERR_INVALID_ARG when buf is NULL and len != 0.
+ */
+HPULOGC_API int hpulogc_strerror(int code, char* buf, size_t len);
+
 /* ---- Init / shutdown ---- */
 
 /**
