@@ -599,3 +599,9 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | N-6 | 重连不重新解析 DNS | 重连沿用 start 时解析的地址（§4.10.8 已写入规范） | 回调内 getaddrinfo 会阻塞且动态分配（违反 §4.10.4）；代价：远端 IP 长期变更需热重载重建 |
 | N-7 | UDP EAGAIN 判定路径 | socket 恒 `O_NONBLOCK`（hpu_net_dgram_open 契约保证），EAGAIN → 计 failed | 使"EAGAIN 丢弃不阻塞"语义在 emit 路径可观测，而非依赖内核缓冲恰好未满 |
 | N-8 | 测试的 fail-fast 路径选择 | `test_tcp_start_refused_fails_fast` 用**不可解析域名**（.invalid）而非 connection-refused | WSL2 localhost 中继使 loopback 已关闭端口的 connect 仍"成功"（后随 RST），refused 前提在该环境不成立；解析失败路径跨环境确定。CI Linux/macOS 上两者均可靠，取更稳健者 |
+
+## D. 网络型 sink 第一期新增缺陷登记（P-7）
+
+| 编号 | 位置 | 描述/现象 | 修复/处理 |
+|------|------|-----------|-----------|
+| P-7 | `src/output/sink_queue.c` worker sweep（**已修**，本 PR） | 第二级队列 worker 的整段 sweep `memcpy` 假设可用区间在环上连续；当 worker 阻塞于慢 `emit_batch`（网络 sink 发送阻塞是常态，async=on 场景）期间生产者推进并回绕环时，`head%cap + avail > cap` 的 sweep **越界读**（macOS ASan 捕获：64KB 队列环末尾越界读 2484 字节）。同路径第二处：生产者回绕桥接 pad（4 字节零 rec_len）落在 sweep 中部时，`sq_decode` 返回 0 使 worker **静默丢弃其后全部已出队记录**（无记账） | sweep 按 `q->cap - head%cap` 边界拆两段拷贝（线性化保序）；decode 循环将 rec_len==0 识别为 4 字节 pad 跳过，仅真损坏记录才终止 sweep。由 test_net_sinks 的 async 队列满用例（64KB 队列 + 阻塞接收端）稳定暴露 |

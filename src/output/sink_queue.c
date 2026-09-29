@@ -258,7 +258,24 @@ static void sq_worker_main(void* arg)
         if (avail > q->cap) {
             avail = q->cap; /* defensive */
         }
-        memcpy(ctx->sweep, q->buf + q->head % q->cap, avail);
+        /* The swept span can wrap the ring (producers advance while this
+         * worker is blocked in a slow emit_batch): copy in two parts at
+         * the ring boundary (defect P-7: a single memcpy read past the
+         * end of q->buf). Records themselves never straddle the wrap
+         * (push pads/drops), so the linearized copy preserves the record
+         * stream, including the 4-byte wrap-bridge pads. */
+        if (avail > 0) {
+            size_t start = q->head % q->cap;
+
+            if (start + avail > q->cap) {
+                size_t first = q->cap - start;
+
+                memcpy(ctx->sweep, q->buf + start, first);
+                memcpy(ctx->sweep + first, q->buf, avail - first);
+            } else {
+                memcpy(ctx->sweep, q->buf + start, avail);
+            }
+        }
         q->head += avail;
         if (q->stop && q->tail == q->head) {
             q->exited = 1;
@@ -274,6 +291,17 @@ static void sq_worker_main(void* arg)
 
             n = 0;
             while (n < ctx->batch_max && off + SQ_HDR <= avail) {
+                uint32_t rec_raw;
+
+                /* A zero rec_len is a wrap-bridge pad written by the
+                 * producer: skip it (defect P-7: breaking here used to
+                 * silently discard every already-swept record after the
+                 * bridge). */
+                memcpy(&rec_raw, ctx->sweep + off, 4);
+                if (rec_raw == 0) {
+                    off += 4;
+                    continue;
+                }
                 rec_len = sq_decode(ctx, off, &ctx->evs[n],
                                     &ctx->flds[n * HPULOGC_MAX_FIELDS]);
                 if (rec_len == 0) {
