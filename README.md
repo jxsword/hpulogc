@@ -7,7 +7,11 @@
 
 - **无锁环形缓冲**（SPSC/MPSC/MPMC，discard/overwrite 溢出策略）与有锁实现二选一；MPMC 支持 N 个消费者线程（rd_v0.3）
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
-- **INI 配置**（zlog 兼容词法）+ 热加载（inotify/SIGHUP/轮询）+ 原子替换回滚
+- **INI 配置**（zlog 兼容词法）+ 热加载（inotify/kqueue/SIGHUP/轮询）+ 原子替换回滚
+- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、4 类内置
+  sink（console/rollingfile/syslog/null）、per-sink 异步队列 + 专属
+  worker 批量写出、结构化字段（typed key=value）与 `%v` 占位符、
+  per-sink 统计
 - **路由规则**（类目选择器 × 级别范围）、5 个内置格式 + 自定义命名格式
 - **轮转**（size/time/both、{base}/{timestamp}/{index} 模板、max files、.latest）
 - **安全**：async-signal-safe 受限通道、fork 惰性重建、errno 保持、注入转义
@@ -47,7 +51,7 @@ cfg.level = HPULOGC_LEVEL_DEBUG;
 hpulogc_init(&cfg);
 ```
 
-或使用 INI 配置文件（模板见 `docs/rd_v0.2.md` §10.3）：
+或使用 INI 配置文件（完整模板见 `docs/rd_v0.6.md` §10）：
 
 ```c
 hpulogc_init_from_file("hpulogc.conf");
@@ -111,7 +115,8 @@ cmake --build build && ctest --test-dir build
 - 同步原语复用 pthread；timedwait 用 Apple 的 relative 等待
   （macOS 的 `pthread_condattr_setclock` 仅支持 REALTIME）；
 - 线程 ID 为 `pthread_threadid_np` 系统级 ID；
-- 配置文件热加载为轮询后端（kqueue 为可选增强，§16.3）；
+- 配置文件热加载为 kqueue（EVFILT_VNODE）后端，不可用时透明回退
+  轮询（§16.3）；
 - 双架构（x86_64/ARM64）与 ASan/TSan 由 GitHub Actions 矩阵覆盖。
 
 常用选项（全平台一致）：
@@ -126,6 +131,7 @@ cmake --build build && ctest --test-dir build
 -DHPULOGC_C_STANDARD=11             # C11（默认 99）
 -DHPULOGC_ATOMIC_BACKEND=gcc-atomic # 强制原子后端
 -DHPULOGC_SANITIZER=address         # address / thread / undefined / address,undefined
+-DHPULOGC_SINKS=console,rollingfile,syslog,null  # 内置 sink 白名单裁剪
 ```
 
 > 并发模式与是否无锁均为**编译期选择**，不可运行时更改；取值非法时
@@ -167,7 +173,8 @@ consumer threads = 4
 - **顺序保证**：MPMC 不保证记录间全局输出顺序（每条记录自身原子
   完整）；依赖全局顺序的场景请使用 SPSC/MPSC 构建；
 - 统计恒等式与单消费者构建一致；`hpulogc_build_info_t.concurrency`
-  返回 `"mpmc"`。
+  返回 `"mpmc"`，`sinks` 返回编译期内置 sink 类型列表（append-only
+  ABI，rd_v0.6 新增）。
 
 全矩阵验证：
 
@@ -178,6 +185,86 @@ bash scripts/run_matrix.sh
 # Windows MSVC（C99/C11 × 有锁/无锁 × SPSC/MPSC/MPMC + 4 预设，含零告警门禁）
 powershell -ExecutionPolicy Bypass -File scripts\run_matrix.ps1
 ```
+
+### 多 Sink 体系（Phase 5）
+
+每个输出实例都是一个 **sink**（vtable 抽象，`hpulogc_sink_ops_t`），
+通过 `[outputs]`（INI）或 `hpulogc_config_t.sinks[]`（代码内，能力对等）
+声明实例；内置 4 类：`console`、`rollingfile`（`file` 为别名）、
+`syslog`（POSIX 专属，进程内单实例）、`null`。未注册的类型一律
+fail-fast。每个实例可选 `async = on` 走 **per-sink 异步投递**：专属
+有界字节环队列 + 专属 worker 批量写出，队列满丢弃当前事件并计入该
+实例的 `dropped`（恒不阻塞投递方；`queue size` 支持 64KB~16MB）。
+
+```ini
+# 节顺序有规范约束：[formats] 先于 [outputs] 先于 [rules]（§10.2）
+[formats]
+rendered = "%time [%level] %msg %v%n"   ; %v 渲染结构化字段 k=v 列表
+
+[outputs]
+console0 = console, stream=stdout
+applog   = file, path=logs/app.log, rotate=size, max size=10M, max files=7
+worker   = file, path=logs/worker.log, async=on, queue size=1M
+drop     = null
+
+[rules]
+*.*      = standard, console0, applog
+worker.* = rendered, worker
+```
+
+**结构化字段**（`HPULOGC_*_EX` 宏族，I64/U64/F64/BOOL/STR 五类值，
+键 64B / 值 256B / 每条 16 字段预算，超限计入全局 `fields_dropped`）：
+
+```c
+hpulogc_field_t f[2] = {
+    { .key = "req_id", .value = { .type = HPULOGC_FIELD_U64, .v.u64 = 1001 } },
+    { .key = "peer",   .value = { .type = HPULOGC_FIELD_STR,
+                                  .v.str = { .s = "10.0.0.7", .len = 8 } } }
+};
+HPULOGC_INFO_EX("net", f, 2, "request done in %d ms", 42);
+```
+
+文本格式需在模板中放 `%v`（渲染为 `k=v k2=v2` 空格分隔、无字段为
+空串）；内置 `json` 格式自动在对象末尾拼接 `,"fields":{...}` 成员。
+
+**自定义 sink**（init 前注册，init 后注册表冻结；回调内禁止调用
+`hpulogc_sink_*` 以外的库 API，稳态零 malloc）：
+
+```c
+static int my_configure(hpulogc_sink_t* s, const char* k, const char* v)
+{
+    return 0; /* 逐项接收私有键；未知键返回非 0（strict 时 fail-fast） */
+}
+
+static void my_emit(hpulogc_sink_t* s, const hpulogc_event_t* ev)
+{
+    fwrite(ev->line, 1, ev->line_len, stdout);   /* 行视图；ev->fields 为结构化视图 */
+}
+
+static const hpulogc_sink_ops_t g_my_ops = {
+    "myout", HPULOGC_SINK_ABI_VERSION,
+    HPULOGC_CAP_SYNC | HPULOGC_CAP_ASYNC,        /* 声明能力，核心据此路由 */
+    0,                                           /* priv_size：核心按此分配零化私有区 */
+    my_configure, NULL, NULL, my_emit,           /* configure/init/start/emit */
+    NULL, NULL, NULL, NULL,                      /* emit_batch/flush/sync/periodic */
+    NULL, { NULL, NULL, NULL, NULL }             /* destroy + reserved（ABI 追加位） */
+};
+
+/* hpulogc_init() 之前： */
+hpulogc_sink_register(&g_my_ops);
+```
+
+**per-sink 统计**（任一线程可读，事件视图仅回调内有效）：
+
+```c
+hpulogc_sink_stats_t st;
+if (hpulogc_get_sink_stats("applog", &st) == HPULOGC_OK) {
+    /* st.written / st.dropped（async 队列满）/ st.failed / st.bytes_written */
+}
+```
+
+生命周期契约（create → configure* → init → start → emit/batch → flush
+→ destroy）与 ABI 冻结规则的规范性描述见 `docs/rd_v0.6.md` §4.10。
 
 ## 安装与集成
 
@@ -194,12 +281,14 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 
 - 需求规格（规范性，唯一现行版）：`docs/rd_v0.6.md`（合并 v0.2 全文、
   v0.3 MPMC 增量与多 sink 体系；历史版本 rd_v0.2/rd_v0.3 保留作快照）
+- 多 sink 需求与设计：`docs/mul_sink.md`
 - 用户决策记录：`docs/decision_log.md`
 - 代码结构与平台契约：`docs/code_structure.md`
 - 实现决策记录：`docs/implementation_notes.md`（含 Phase 2 Windows、
-  Phase 4 MPMC 章节）
+  Phase 4 MPMC、Phase 5 多 sink 章节与 P-1..P-4 缺陷登记）
 - 性能测试报告：`docs/perf_report.md`（Phase 1 / Linux）、
-  `docs/perf_report_windows.md`（Phase 2 / Windows）
+  `docs/perf_report_windows.md`（Phase 2 / Windows）、
+  `docs/perf_report_sinks.md`（多 sink 分发开销）
 
 ## 许可证
 
