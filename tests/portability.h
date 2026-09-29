@@ -269,6 +269,16 @@ static inline void hpu_test_truncate_file(const char* path, long size)
     }
 }
 
+/**
+ * @brief Rename a file (works while another process/handle keeps it open,
+ *        given the handle was opened with FILE_SHARE_DELETE).
+ * @return 0 on success, -1 on failure.
+ */
+static inline int hpu_test_rename(const char* from, const char* to)
+{
+    return MoveFileA(from, to) ? 0 : -1;
+}
+
 #else /* POSIX */
 
 #include <errno.h>
@@ -449,6 +459,15 @@ static inline void hpu_test_truncate_file(const char* path, long size)
         (void)ftruncate(fileno(fp), (off_t)size);
         fclose(fp);
     }
+}
+
+/**
+ * @brief Rename a file (POSIX allows it while the file is open).
+ * @return 0 on success, -1 on failure.
+ */
+static inline int hpu_test_rename(const char* from, const char* to)
+{
+    return rename(from, to);
 }
 
 #endif /* !_WIN32 */
