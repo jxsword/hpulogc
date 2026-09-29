@@ -275,15 +275,23 @@ static int file_start(hpulogc_sink_t* sink)
     return 0;
 }
 
-static void file_emit(hpulogc_sink_t* sink, const hpulogc_event_t* ev)
+/**
+ * @brief Emit one event with the mutex held.
+ *
+ * Shared by the single-event and batched delivery paths. On failure the
+ * event is lost; the caller owns the `failed` accounting (the batch path
+ * reports the success count instead, so accounting must stay here-free).
+ *
+ * @return 0 when the line is buffered/written, -1 when it is lost.
+ */
+static int file_emit_one_locked(hpulogc_sink_t* sink, hpu_file_priv_t* f,
+                                const hpulogc_event_t* ev)
 {
-    hpu_file_priv_t* f = hpulogc_sink_priv(sink);
     const char* line = ev->line;
     size_t len = ev->line_len;
     int64_t ts_sec = ev->realtime_ns / 1000000000LL;
     int rc = 0;
 
-    hpu_mutex_lock(&f->mu);
 #if HPULOGC_ENABLE_ROTATE
     if (f->rotate.enabled) {
         int need_rotate = 0;
@@ -301,70 +309,95 @@ static void file_emit(hpulogc_sink_t* sink, const hpulogc_event_t* ev)
         if (need_rotate) {
             /* Pending bytes belong to the old file: flush first. */
             if (file_flush_locked(sink, f) != 0) {
-                rc = -1;
-            } else {
-                rc = hpu_rotate_file(f->path, &f->fd, &f->file_size,
-                                     &f->rotate,
-                                     hpu_sink_base(sink)->use_utc, ts_sec,
-                                     f->symlink_latest, f->file_mode);
-                if (rc == 0 && f->rotate.by_time) {
-                    f->next_boundary = hpu_rotate_next_boundary(
-                        ts_sec, f->rotate.time_unit,
-                        hpu_sink_base(sink)->use_utc);
-                } else if (rc != 0) {
-                    rc = -1;
-                }
+                return -1;
+            }
+            rc = hpu_rotate_file(f->path, &f->fd, &f->file_size,
+                                 &f->rotate,
+                                 hpu_sink_base(sink)->use_utc, ts_sec,
+                                 f->symlink_latest, f->file_mode);
+            if (rc == 0 && f->rotate.by_time) {
+                f->next_boundary = hpu_rotate_next_boundary(
+                    ts_sec, f->rotate.time_unit,
+                    hpu_sink_base(sink)->use_utc);
+            } else if (rc != 0) {
+                /* Rotation failure: the line is lost. */
+                return -1;
             }
         }
     }
 #else
     (void)ts_sec;
 #endif
-    if (rc == 0) {
-        if (f->fd < 0) {
-            if (file_open_active(f) != 0) {
-                hpu_mutex_unlock(&f->mu);
-                hpu_sink_account_failed(sink, 1);
-                return;
-            }
+    if (f->fd < 0) {
+        if (file_open_active(f) != 0) {
+            return -1;
         }
-        if (f->iolen + len > sizeof(f->iobuf)) {
-            if (file_flush_locked(sink, f) != 0) {
-                rc = -1;
-            }
+    }
+    if (f->iolen + len > sizeof(f->iobuf)) {
+        if (file_flush_locked(sink, f) != 0) {
+            return -1;
         }
-        if (len > sizeof(f->iobuf)) {
-            /* Oversized single line: write directly. */
-            if (hpu_fs_write(f->fd, line, len) == 0) {
-                f->file_size += (int64_t)len;
-            } else {
-                rc = -1;
-                hpu_sink_account_failed(sink, 1);
-            }
+    }
+    if (len > sizeof(f->iobuf)) {
+        /* Oversized single line: write directly. */
+        if (hpu_fs_write(f->fd, line, len) == 0) {
+            f->file_size += (int64_t)len;
         } else {
-            memcpy(f->iobuf + f->iolen, line, len);
-            f->iolen += len;
-            f->pending_lines++;
-            if (f->iolen >= FLUSH_THRESHOLD) {
-                if (file_flush_locked(sink, f) != 0) {
-                    rc = -1;
-                }
-            } else if (hpu_sink_base(sink)->fsync_sev >=
-                       HPU_FSYNC_SEV_ENTRY) {
-                /* per-entry fsync policy (spec 9) */
-                if (file_flush_locked(sink, f) != 0) {
-                    rc = -1;
-                } else if (f->fd >= 0 && hpu_fs_sync(f->fd) != 0) {
-                    rc = -1;
-                }
-            }
+            return -1;
         }
     } else {
-        /* Rotation failure: the line is lost. */
+        memcpy(f->iobuf + f->iolen, line, len);
+        f->iolen += len;
+        f->pending_lines++;
+        if (f->iolen >= FLUSH_THRESHOLD) {
+            if (file_flush_locked(sink, f) != 0) {
+                return -1;
+            }
+        } else if (hpu_sink_base(sink)->fsync_sev >= HPU_FSYNC_SEV_ENTRY) {
+            /* per-entry fsync policy (spec 9) */
+            if (file_flush_locked(sink, f) != 0) {
+                return -1;
+            }
+            if (f->fd >= 0 && hpu_fs_sync(f->fd) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void file_emit(hpulogc_sink_t* sink, const hpulogc_event_t* ev)
+{
+    hpu_file_priv_t* f = hpulogc_sink_priv(sink);
+    int rc;
+
+    hpu_mutex_lock(&f->mu);
+    rc = file_emit_one_locked(sink, f, ev);
+    hpu_mutex_unlock(&f->mu);
+    if (rc != 0) {
         hpu_sink_account_failed(sink, 1);
     }
+}
+
+static int file_emit_batch(hpulogc_sink_t* sink,
+                           const hpulogc_event_t* const* evs, size_t n)
+{
+    hpu_file_priv_t* f = hpulogc_sink_priv(sink);
+    size_t i;
+    int done = 0;
+
+    /* One lock acquisition amortizes the mutex cost over the whole batch;
+     * per-event rotation decisions and buffer flushes stay identical to
+     * the single-event path. Failures are reported via the return value
+     * (§4.10.6: core books done into written, the rest into failed). */
+    hpu_mutex_lock(&f->mu);
+    for (i = 0; i < n; i++) {
+        if (file_emit_one_locked(sink, f, evs[i]) == 0) {
+            done++;
+        }
+    }
     hpu_mutex_unlock(&f->mu);
-    (void)rc;
+    return done;
 }
 
 static int file_flush(hpulogc_sink_t* sink)
@@ -444,7 +477,7 @@ static const hpulogc_sink_ops_t g_rollingfile_ops = {
     file_init,
     file_start,
     file_emit,
-    NULL, /* emit_batch: core loops emit */
+    file_emit_batch,
     file_flush,
     file_sync,
     file_periodic,
