@@ -64,3 +64,6 @@ conan_build/
 tmp/
 
 .zcode/
+
+# CTest scratch output (created by any local ctest run)
+Testing/

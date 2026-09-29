@@ -249,8 +249,10 @@ static void rotate_update_symlink(const char* path)
 {
     char dir[HPULOGC_MAX_PATH_LEN];
     char base[HPULOGC_MAX_PATH_LEN];
-    char linkpath[HPULOGC_MAX_PATH_LEN + 16];
-    char tmppath[HPULOGC_MAX_PATH_LEN + 32];
+    /* dir + base can each fill MAX_PATH_LEN: size for the worst case so
+     * the join never truncates */
+    char linkpath[2 * HPULOGC_MAX_PATH_LEN + 16];
+    char tmppath[2 * HPULOGC_MAX_PATH_LEN + 32];
 
     if (hpu_path_dirname(path, dir, sizeof(dir)) != 0 ||
         hpu_path_basename(path, base, sizeof(base)) != 0) {

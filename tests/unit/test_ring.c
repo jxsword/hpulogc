@@ -181,8 +181,8 @@ TEST(ring_wrap_and_pad)
         CHECK_EQ(hpu_ring_get(r, &v, staging, sizeof(staging), 100),
                  HPU_RING_OK);
         {
-            unsigned p;
-            unsigned long s;
+            unsigned p = 0;
+            unsigned long s = 0;
             parse_view(&v, &p, &s);
             CHECK_EQ(p, 1);
             CHECK_EQ((int)s, (int)i); /* strict order, no loss/dup */
@@ -226,8 +226,8 @@ TEST(ring_discard_full)
         CHECK_EQ(hpu_ring_get(r, &v, staging, sizeof(staging), 0),
                  HPU_RING_OK);
         {
-            unsigned p;
-            unsigned long s;
+            unsigned p = 0;
+            unsigned long s = 0;
             parse_view(&v, &p, &s);
             CHECK_EQ((int)s, (int)i); /* prefix preserved */
         }
@@ -259,8 +259,8 @@ TEST(ring_overwrite_full)
         CHECK_EQ(hpu_ring_put(r, &msg), HPU_RING_OK);
     }
     while (hpu_ring_get(r, &v, staging, sizeof(staging), 0) == HPU_RING_OK) {
-        unsigned p;
-        unsigned long s;
+        unsigned p = 0;
+        unsigned long s = 0;
         if (delivered == 0) {
             parse_view(&v, &p, &s);
             first_seq = (unsigned)s;
@@ -714,8 +714,8 @@ typedef struct mpmc_carg {
  */
 static void mpmc_mark(mpmc_carg_t* a, const hpu_ring_view_t* v)
 {
-    unsigned p;
-    unsigned long s;
+    unsigned p = 0;
+    unsigned long s = 0;
 
     parse_view(v, &p, &s);
     CHECK(p < STRESS_PRODUCERS);

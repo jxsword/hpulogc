@@ -453,19 +453,6 @@ static void rb_append_ch(render_buf_t* b, char c)
 }
 
 /**
- * @brief Append an unsigned decimal number.
- */
-static void rb_append_u64(render_buf_t* b, uint64_t v)
-{
-    char tmp[24];
-    int n = snprintf(tmp, sizeof(tmp), "%llu", (unsigned long long)v);
-
-    if (n > 0) {
-        rb_append(b, tmp, (size_t)n);
-    }
-}
-
-/**
  * @brief Append a number in decimal or hexadecimal.
  * @param hex_mode Non-zero for hexadecimal (0x prefix).
  */
