@@ -2,12 +2,15 @@
 
 [![CI](https://github.com/jxsword/hpulogc/actions/workflows/ci.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/ci.yml)
 [![CI (Windows MSVC)](https://github.com/jxsword/hpulogc/actions/workflows/win_msvc.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/win_msvc.yml)
+[![CI (Windows MinGW-w64)](https://github.com/jxsword/hpulogc/actions/workflows/win_mingw.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/win_mingw.yml)
+[![CI (vcpkg smoke)](https://github.com/jxsword/hpulogc/actions/workflows/vcpkg_smoke.yml/badge.svg)](https://github.com/jxsword/hpulogc/actions/workflows/vcpkg_smoke.yml)
 
 纯 C99/C11、零第三方依赖、跨平台的高性能日志库（Linux / Windows / macOS）。
 
 - **无锁环形缓冲**（SPSC/MPSC/MPMC，discard/overwrite 溢出策略）与有锁实现二选一；MPMC 支持 N 个消费者线程（rd_v0.3）
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
-- **INI 配置**（zlog 兼容词法）+ 热加载（inotify/kqueue/SIGHUP/轮询）+ 原子替换回滚
+- **INI 配置**（zlog 兼容词法）+ 热加载（inotify / kqueue / ReadDirectoryChangesW，
+  SIGHUP 触发，通知不可用时轮询回退）+ 原子替换回滚
 - **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、6 类内置
   sink（console/rollingfile/syslog/tcp/udp/null，其中网络型 tcp/udp 为
   v0.6.2 新增、POSIX 专属）、per-sink 异步队列 + 专属
@@ -96,6 +99,9 @@ MSVC 构建默认启用 `/W4 /utf-8`（零告警门禁）；`HPULOGC_SANITIZER=a
 （`newline = auto` → Windows 输出 `\r\n`）；`file perms`/`dir perms`/
 `symlink latest` 在 Windows 上忽略并输出一次性告警（§4.7）。
 
+配置文件热加载为 `ReadDirectoryChangesW`（父目录 + 文件名过滤 + 快照
+确认，D-R10）后端，不可用时透明回退轮询（§4.5/§16.2）。
+
 ### Windows（MinGW-w64，可选）
 
 ```bash
@@ -104,6 +110,8 @@ cmake --build build-mingw && (cd build-mingw && ctest)
 ```
 
 MinGW-w64 与 MSVC 共用同一原子后端（`Interlocked*`，Windows 后端唯一）。
+CI 由 `win_mingw.yml` 覆盖（C99/C11 × 默认并发，GCC `-Wall -Wextra`
+零告警门禁；CMake 自动定义 `__USE_MINGW_ANSI_STDIO=1` 保证 C99 `%z`）。
 
 ### macOS（Phase 3）
 
@@ -353,7 +361,8 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
   P-1..P-7 缺陷登记）
 - 性能测试报告：`docs/perf_report.md`（Phase 1 / Linux）、
   `docs/perf_report_windows.md`（Phase 2 / Windows）、
-  `docs/perf_report_sinks.md`（多 sink 分发开销）
+  `docs/perf_report_sinks.md`（多 sink 分发开销，§7 为 Windows/macOS
+  跨平台补充数据）
 
 ## 配置校验 CLI
 
