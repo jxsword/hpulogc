@@ -1,5 +1,11 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+# The exported hpulogc::hpulogc target links Threads::Threads in its
+# INTERFACE (consumer-facing thread library), so the dependency must be
+# re-found before the targets file defines it.
+find_dependency(Threads)
+
 include("${CMAKE_CURRENT_LIST_DIR}/hpulogcTargets.cmake")
 
 check_required_components(hpulogc)
