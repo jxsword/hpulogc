@@ -266,3 +266,86 @@
   rd_v0.6 §10.3 [formats] 模板缺陷（照抄内置五格式名会 duplicate
   启动失败）与 README 多 sink 示例的分号注释错误（`;` 非注释符）；
   登记 P-5（enabled=false 措辞 vs 实现语义）。
+
+## D-R4 级别启用查询 API 的语义范围与未初始化返回值（2026-09-29，todo.md #3 工单）
+
+- 背景：附录 A #3（level_enabled 检查 API）定案采纳，需确定两个语义自由度：
+  ① 查询语义覆盖管线的哪些丢弃点（管线丢弃点依次为：状态检查 → 级别过滤
+  §4.9② → 限流/采样③ → 溢出④ → 路由兜底⑥ → sink enabled 门禁⑧）；
+  ② 未初始化/已 shutdown 时的返回值。约束：便捷宏用法为
+  `if (HPULOGC_INFO_ENABLED(cat))`，非零即放行，负错误码会误放行。
+- 选项（①语义范围）：
+  - A. **仅级别过滤**（全局阈值 level_atomic + per-category override，
+    与管线②精确一致）——优点：无假阴性（返回 0 则记录必被丢弃）、读路径
+    零锁、实现最小（~40 行）；缺点：零输出误配置下返回 1 但实际丢弃
+    （init 期已告警的边缘场景）/ 代价：无
+  - B. 级别+路由（todo.md 字面建议）——优点：完整反映"是否会被输出" /
+    缺点：每次门禁多一次 conf_lock 获取（与单条日志本身锁成本同量级，
+    削弱门禁收益）；未注册 category 需决定注册副作用或直评规则；
+    零输出仅误配置时出现，收益极小 / 代价：热路径锁竞争 + 代码增多
+  - C. 含限流/采样预测——查询会消耗令牌/采样计数，查询改变后续行为，
+    语义自我干扰，不可行（仅列具备完整性）
+- 选项（②未初始化返回值）：
+  - A. **恒返回 0（false）**——与"未初始化时日志必定不输出"语义一致，
+    布尔门禁直接安全 / 代价：调用方无法区分"未初始化"与"被过滤"（非需求）
+  - B. 返回 HPULOGC_ERR_STATE（-5）——与控制 API 惯例一致 / 缺点：负值
+    在布尔门禁中误判为 enabled，宏内需层层 `== 1` 比较，易被第三方误用
+  - C. 按默认级别 INFO 判断——未初始化时无配置可依据，语义捏造
+- 结论：①A；②A。
+- 理由：门禁宏的核心价值是"说 0 就一定被丢弃"的无假阴性 + 零锁热路径；
+  "不预测路由"与 todo.md"不预测限流/采样"是同一逻辑延伸；未初始化恒 0
+  与写 API 静默丢弃行为严格对齐。
+- 影响：rd_v0.6 §4.1"级别启用查询"（v0.6.1）与 §7.3 条目；§17 P1 行；
+  `hpulogc_level_enabled` 实现（registry find-only，无注册副作用）、
+  `HPULOGC_TRACE_ENABLED`..`HPULOGC_FATAL_ENABLED` 宏族（受
+  HPULOGC_COMPILE_TIME_LEVEL 裁剪，被裁级别恒 0）。
+
+## D-R5 配置校验的入口形态（2026-09-29，todo.md #4 工单）
+
+- 背景：附录 A #4（配置校验 CLI）定案采纳，入口形态决定 ABI 面与集成方
+  体验。append-only ABI 规则允许追加公共 API；规范先行要求先在 rd_v0.6
+  定义再实现。
+- 选项：
+  - A. 仅独立可执行 `hpulogc_chk_conf`（链接库内解析器）——优点：ABI 面
+    零扩大、实现最快（main + load_file + finalize + 退出码映射）/ 缺点：
+    集成方只能子进程调用（嵌入式/Windows 服务场景不友好）；错误文本仅
+    stderr，无法程序化获取 / 代价：无
+  - B. **新增公共 API `hpulogc_conf_validate(path, strict, err_buf, err_len)`
+    + CLI 薄壳**（选中）——优点：集成方进程内预检（启动前校验是常见
+    诉求）；CLI/CI/ctest 复用同一入口；后续 `hpulogc_strerror`（P2）可
+    复用同一 diag 捕获机制 / 缺点：扩大 ABI 面（append-only 本为此设计）；
+    需将解析诊断改造为可捕获（diag 回调，默认仍 stderr）；需给内部
+    `hpu_conf_finalize` 加 dry-run 路径避免校验真实创建日志文件
+- 结论：B。
+- 理由：对集成方价值更高；diag 捕获是一次性投入且可复用；ABI 扩大在
+  append-only 规则与规范先行流程内是常规操作。
+- 影响：rd_v0.6 §7.3（conf_validate 条目）与 §11（CLI 小节，v0.6.1）；
+  §17 P2 行；conf 模块 diag 回调改造 + finalize dry-run；tools/ 新 target
+  （`HPULOGC_ENABLE_INI` 守卫，min 预设自动排除）；CI 校验
+  examples/conf_eg.ini。CLI 细节（非决策项）：strict 默认跟随文件自身
+  `strict init`（-1），`--strict/--lenient` 覆盖；退出码 0=合法/1=非法/
+  2=用法或 IO 错误。
+
+## D-R6 24h 压测的执行方式（2026-09-29，todo.md P1 发布前门禁）
+
+- 背景：rd_v0.6 §13.3（注：todo.md 早期引用的"§13.5"实为自动化节，
+  压测要求所在为 §13.3）要求"≥ 24h 高并发，验证无泄漏/无竞争/无死锁"，
+  发布前门禁。GitHub-hosted runner 单 job 有 6h 时长上限。
+- 选项：
+  - A. GitHub Actions nightly 24h——环境干净、可归档 / 缺点：单 job 6h
+    上限，需 4×6h 分片 + 跨 job 状态续传，复杂且状态不可靠 / 代价：高
+  - B. **本地 WSL 后台 24h（先 1h 分片验证）**（选中）——优点：时长不受
+    限；脚本 `--duration` 参数化，先 1h 验证脚本与判据采集正确再全量；
+    nohup + 周期 checkpoint 支持断点续跑；会话内可跟踪 / 缺点：本机
+    睡眠/WSL 重启风险（断点续跑缓解）；非生产环境（报告明示口径）
+  - C. 缩短为 8–12h——不满足 §13.3 门禁时长，只能作为明示降级路径，
+    不视为完成门禁
+- 结论：B。
+- 理由：A 受平台硬上限不可行；C 不满足规范门禁；B 配合断点续跑风险可控。
+- 影响：`tools/soak/soak_driver.c`（EXCLUDE_FROM_ALL）+ `scripts/soak_24h.sh`；
+  负载形态（非决策项，按 todo.md 定案）：MPMC 构建、consumer threads=4、
+  4 生产者混合级别/category/结构化字段，sink 扇出 = rollingfile（size
+  轮转）+ null + console 重定向文件，周期热加载（级别翻转）+ 周期 flush；
+  通过判据（非决策项，按 §13.3 定案）：RSS 无增长趋势（无泄漏）、TSan
+  零竞争、进度心跳无停滞（无死锁）、统计恒等式闭合；默认构建 + TSan
+  构建并行。产出 `docs/perf_report_soak.md` + implementation_notes 登记。

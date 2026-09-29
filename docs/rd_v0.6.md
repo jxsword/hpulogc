@@ -105,6 +105,15 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 - **运行时**可动态修改全局过滤阈值（`hpulogc_set_level`）；启用 Category 时可用 `hpulogc_set_level_for_category` 按 category 覆盖（**覆盖语义**：该 category 已设置级别时以其为准，未设置时使用全局级别）。
 - **编译期**可通过宏定义 `HPULOGC_COMPILE_TIME_LEVEL` 移除低于阈值的代码（零开销抽象）：裁剪点仅在便捷宏 `HPULOGC_xxx` 的预处理分支上，低于阈值的宏展开为空语句；对直接调用 `hpulogc_log()` 的代码无效。允许取值为 `HPULOGC_LEVEL_TRACE` ~ `HPULOGC_LEVEL_FATAL`，另允许 `HPULOGC_LEVEL_OFF`（移除全部便捷宏日志）。
 
+**级别启用查询（规范性，v0.6.1 新增）**：
+
+- `hpulogc_level_enabled(category, level)`（§7.3）与便捷宏族 `HPULOGC_TRACE_ENABLED(cat)` … `HPULOGC_FATAL_ENABLED(cat)` 返回"调用线程视角下该 category + level 能否**通过级别过滤**"的判定（1 = 能，0 = 不能）。
+- 语义范围 = 管线步骤②（级别过滤）：per-category 覆盖语义与上条一致。查询**不预测**后续步骤——路由兜底（⑥）、限流/采样（③）、溢出策略（④）与 sink 级 `enabled` 门禁（⑧）均不在判定范围内；返回 1 仅保证该记录必然通过级别过滤，不保证最终输出（决策记录 D-R4：门禁宏的核心价值是"说 0 就一定被丢弃"的无假阴性 + 零锁热路径）。
+- 热加载与 `hpulogc_set_level` / `hpulogc_set_level_for_category` 的级别翻转对后续查询**即时生效**。
+- 未初始化 / 已 shutdown 时恒返回 0（与写入 API 静默丢弃的语义一致）；`level` 非法（含 `HPULOGC_LEVEL_OFF`）恒返回 0；`category` 为 NULL 时按 `"*"` 判定。
+- 查询**无副作用**：不触发 category 登记、不消耗限流令牌或采样计数。
+- `HPULOGC_COMPILE_TIME_LEVEL` 裁剪对 ENABLED 宏族同样生效：被裁级别的 `HPULOGC_xxx_ENABLED(cat)` 恒展开为 `0`（供 `if` 门禁使用）。
+
 ### 4.2 并发模型
 
 | 特性 | 说明 |
@@ -717,6 +726,22 @@ int  hpulogc_sync(void);
  * category 为 NULL 时返回 HPULOGC_ERR_INVALID_ARG。 */
 int  hpulogc_set_level(hpulogc_level_t level);
 int  hpulogc_set_level_for_category(const char* category, hpulogc_level_t level);
+
+/* 级别启用查询（§4.1"级别启用查询"，规范性）：返回 1 = 该 category + level 能通过管线步骤②
+ * （级别过滤），0 = 不能（含未初始化/shutdown、level 非法或被过滤）。
+ * 不预测路由/限流/采样/溢出；无副作用（不登记 category、不消耗令牌）；
+ * 热加载与 set_level* 翻转即时生效；线程安全，任意时刻可调用。
+ * category 为 NULL 时按 "*" 判定。 */
+int  hpulogc_level_enabled(const char* category, hpulogc_level_t level);
+/* 便捷门禁宏族（受 HPULOGC_COMPILE_TIME_LEVEL 裁剪：被裁级别恒为 0）：
+ * #define HPULOGC_TRACE_ENABLED(cat) hpulogc_level_enabled(cat, HPULOGC_LEVEL_TRACE)  … 依级别类推 */
+
+/* 配置校验（§11"配置校验 CLI"，规范性；INI=OFF 构建恒返回 HPULOGC_ERR_CONFIG）：
+ * 校验 config_path 指向的配置文件，语义校验范围与 init 一致（dry-run：不打开日志文件、无副作用）。
+ * strict：-1 = 跟随文件自身 strict init 键（决策 6 两遍解析）；0 = lenient；1 = strict（覆盖文件值）。
+ * 返回 0 = 合法；HPULOGC_ERR_CONFIG = 非法（err_buf 捕获首条 "文件:行号: 原因" 诊断，
+ * 可为 NULL；err_len 为缓冲区字节数）；HPULOGC_ERR_IO = 文件不可读；HPULOGC_ERR_INVALID_ARG = path 为 NULL。 */
+int  hpulogc_conf_validate(const char* config_path, int strict, char* err_buf, size_t err_len);
 
 /* 构建信息查询：info 为 NULL 时安全忽略；可在任意时刻调用（不要求已初始化）。 */
 typedef struct {
@@ -1380,6 +1405,7 @@ stats output = stderr
 | 代码格式化 | `.clang-format` 统一风格 |
 | 交叉编译 | 支持 CMake Toolchain File |
 | 安装 | `make install` 安装头文件、库、`hpulogcConfig.cmake` |
+| 配置校验 CLI | 附带 `hpulogc_chk_conf` 可执行（INI 构建专属，min 预设不构建）：`hpulogc_chk_conf [--strict\|--lenient] <config.ini>`，校验通过退出码 0、非法退出码 1（诊断输出"文件:行号: 原因"）、用法/IO 错误退出码 2；经 `hpulogc_conf_validate`（§7.3）实现，校验无副作用（不创建日志文件）。CI 至少一个作业用它校验 `examples/conf_eg.ini` |
 | 包管理 | 提供 vcpkg / Conan recipe（P2） |
 
 ---
@@ -1533,8 +1559,8 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 优先级 | 项目 |
 |--------|------|
 | **P0（必须）** | 纯 C 实现、跨平台、线程安全、6 级日志、环形缓冲（有锁）、文件+控制台输出、INI 配置、单元测试、CMake 构建、API 签名、导出符号、错误处理、编译警告、Sanitizer、安装规则、示例、配置解析器行为约束 |
-| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递** |
-| **P2（增强）** | 彩色输出（Linux 部分随 Phase 1，Windows VT 适配随 Phase 2）、格式定制、包管理器、静态分析、文档生成、移植指南、`hpulogc_strerror` 错误描述 API |
+| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）** |
+| **P2（增强）** | 彩色输出（Linux 部分随 Phase 1，Windows VT 适配随 Phase 2）、格式定制、包管理器、静态分析、文档生成、移植指南、`hpulogc_strerror` 错误描述 API、**配置校验 `hpulogc_conf_validate` + `hpulogc_chk_conf` CLI（§7.3/§11）** |
 
 ---
 
@@ -1546,24 +1572,24 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 >
 > **使用方式**：A.1 各项由文档维护者逐项决策——采纳项转入正文规范性条款，不采纳项移入 A.2，状态列同步更新。
 
-### A.1 待决策项（zlog 做法可能更优）
+### A.1 zlog 对比决策项（原"待决策项"，2026-09-29 全部定案）
 
 | # | 主题 | zlog（master）做法 | 本文档现行方案 | 对比与建议 | 状态 |
 |---|------|--------------------|----------------|------------|------|
-| 1 | 时间戳按秒缓存 | 每个时间占位符独立缓存槽，strftime 结果在同一秒内复用（每秒每占位符至多一次 `localtime_r`+`strftime`），热路径时间格式化近乎零成本 | 未规定（`%time` 每条重新渲染） | **建议采纳**为实现要求；代价仅每占位符一个缓存槽 + 每秒一次刷新，对 §8 延迟目标收益明显 | 待决策 |
-| 2 | per-category 预计算路由 + 级别位图 | category 登记时预计算命中规则列表与级别位图；每条日志先 O(1) 位测试短路，再遍历命中规则；热加载用双缓冲 update/commit/rollback | §4.9 步骤②⑥ 仅定义语义，未规定实现结构 | **建议采纳**为实现要求；与本文 category 登记表、热加载原子替换天然契合 | 待决策 |
-| 3 | level_enabled 检查 API | `zlog_level_enabled(cat, level)` + `zlog_fatal_enabled(cat)` 等宏 + printf format 属性（编译期检查格式串） | 无对应 API | **建议采纳**（P1）：`hpulogc_level_enabled(category, level)`、`HPULOGC_xxx_ENABLED(cat)` 宏、便捷宏加 format 属性；避免调用方为被过滤日志做昂贵的参数构造 | 待决策 |
-| 4 | 配置校验 CLI | 附带 `zlog-chk-conf` 独立校验工具（CI 可用） | 无 | **建议采纳**（P2）：`hpulogc_chk_conf`，退出码报告错误行号 | 待决策 |
-| 5 | 外部轮转检测 | 静态文件输出每条 `stat` 比对 inode/dev，检测外部 logrotate 换文件后重开（WatchedFileHandler 语义） | 仅"运行期写失败时重开一次"（§9） | zlog 每条 `stat` 有可测开销（与 §4.6 O(1) 检查要求冲突）；建议**节流采纳**（每 N 条 + 写失败时比对 inode）或保持现状 | 待决策 |
-| 6 | `!LEVEL` 取反匹配 | 规则级别支持裸 `LEVEL`（≥ 语义）、`=LEVEL`（精确）、`!LEVEL`（除该级别外）、`*` | `*` / `LEVEL`（精确）/ `A~B`（范围） | `!LEVEL` 语法成本低、表达力补充，**建议采纳**；注意 zlog 裸 LEVEL 为 ≥ 语义，与本文"精确"不同，若采纳需保持本文语义并标注 | 待决策 |
-| 7 | 格式占位符扩展 | `%d`/`%g`（本地/UTC 时间）、`%ms`/`%us`、`%k`（系统级 tid）、`%H`（主机名）、`%F`/`%f`（全/短文件名）、printf 宽度/精度修饰符（`%-20.30c`） | 9 个占位符 + `%f` 微秒扩展（§10.3/§12） | **建议至少采纳** `%g`（UTC 时间）与宽度/精度修饰符；`%k`/`%H`/短文件名低优先；本文 `%f` 与 zlog `%ms`/`%us` 语义重叠，若引入别名须在 §12 定义共存规则 | 待决策 |
-| 8 | 用户自定义级别 | `[levels]` 节自定义级别（`NAME = int[, syslog_level]`），内置级别含 NOTICE | 固定 7 级枚举（§4.1/§7.6，ABI 冻结） | **建议不引入**（级别集稳定性优先、API 简单）；如确需再评估运行时注册制 | 待决策 |
-| 9 | MDC | 每线程 MDC（put/get/remove + `%M(key)` 占位符） | 无 | **建议不引入**（异步模式下 MDC 属生产者线程上下文，跨线程传递语义复杂；请求级上下文建议调用方自行并入 `%msg`） | 待决策 |
+| 1 | 时间戳按秒缓存 | 每个时间占位符独立缓存槽，strftime 结果在同一秒内复用（每秒每占位符至多一次 `localtime_r`+`strftime`），热路径时间格式化近乎零成本 | 未规定（`%time` 每条重新渲染） | **建议采纳**为实现要求；代价仅每占位符一个缓存槽 + 每秒一次刷新，对 §8 延迟目标收益明显 | **已采纳**（落地于 Phase 1：`format.c` 时间渲染按秒缓存 prefix/suffix 两段） |
+| 2 | per-category 预计算路由 + 级别位图 | category 登记时预计算命中规则列表与级别位图；每条日志先 O(1) 位测试短路，再遍历命中规则；热加载用双缓冲 update/commit/rollback | §4.9 步骤②⑥ 仅定义语义，未规定实现结构 | **建议采纳**为实现要求；与本文 category 登记表、热加载原子替换天然契合 | **已采纳**（落地于 Phase 1/4：registry 条目 `rule_for_level[7]` 缓存 + config_gen 代数惰性重算） |
+| 3 | level_enabled 检查 API | `zlog_level_enabled(cat, level)` + `zlog_fatal_enabled(cat)` 等宏 + printf format 属性（编译期检查格式串） | 无对应 API | **建议采纳**（P1）：`hpulogc_level_enabled(category, level)`、`HPULOGC_xxx_ENABLED(cat)` 宏、便捷宏加 format 属性；避免调用方为被过滤日志做昂贵的参数构造 | **已决策：采纳**；规范定义见 §4.1"级别启用查询"与 §7.3，实现排期见仓库 todo.md（D-R4：仅级别过滤语义、未初始化恒 0） |
+| 4 | 配置校验 CLI | 附带 `zlog-chk-conf` 独立校验工具（CI 可用） | 无 | **建议采纳**（P2）：`hpulogc_chk_conf`，退出码报告错误行号 | **已决策：采纳**；规范定义见 §7.3（`hpulogc_conf_validate`）与 §11（CLI），实现排期见 todo.md（D-R5：公共 API + CLI 薄壳） |
+| 5 | 外部轮转检测 | 静态文件输出每条 `stat` 比对 inode/dev，检测外部 logrotate 换文件后重开（WatchedFileHandler 语义） | 仅"运行期写失败时重开一次"（§9） | zlog 每条 `stat` 有可测开销（与 §4.6 O(1) 检查要求冲突）；建议**节流采纳**（每 N 条 + 写失败时比对 inode）或保持现状 | **已决策：采纳（节流方案：每 N 条 + 写失败时比对 inode）**，排期见 todo.md（中期） |
+| 6 | `!LEVEL` 取反匹配 | 规则级别支持裸 `LEVEL`（≥ 语义）、`=LEVEL`（精确）、`!LEVEL`（除该级别外）、`*` | `*` / `LEVEL`（精确）/ `A~B`（范围） | `!LEVEL` 语法成本低、表达力补充，**建议采纳**；注意 zlog 裸 LEVEL 为 ≥ 语义，与本文"精确"不同，若采纳需保持本文语义并标注 | **已决策：采纳（保持本文"精确"语义并在 §10.3 标注）**，排期见 todo.md |
+| 7 | 格式占位符扩展 | `%d`/`%g`（本地/UTC 时间）、`%ms`/`%us`、`%k`（系统级 tid）、`%H`（主机名）、`%F`/`%f`（全/短文件名）、printf 宽度/精度修饰符（`%-20.30c`） | 9 个占位符 + `%f` 微秒扩展（§10.3/§12） | **建议至少采纳** `%g`（UTC 时间）与宽度/精度修饰符；`%k`/`%H`/短文件名低优先；本文 `%f` 与 zlog `%ms`/`%us` 语义重叠，若引入别名须在 §12 定义共存规则 | **已决策：采纳（至少 `%g` 与宽度/精度修饰符）**，排期见 todo.md |
+| 8 | 用户自定义级别 | `[levels]` 节自定义级别（`NAME = int[, syslog_level]`），内置级别含 NOTICE | 固定 7 级枚举（§4.1/§7.6，ABI 冻结） | **建议不引入**（级别集稳定性优先、API 简单）；如确需再评估运行时注册制 | **已决策：不采纳**（见 A.2 #6） |
+| 9 | MDC | 每线程 MDC（put/get/remove + `%M(key)` 占位符） | 无 | **建议不引入**（异步模式下 MDC 属生产者线程上下文，跨线程传递语义复杂；请求级上下文建议调用方自行并入 `%msg`） | **已决策：不采纳**（见 A.2 #7） |
 | 10 | record / syslog / pipe 输出 | `$record` 回调、`>syslog[,facility]`（级别映射）、`\|pipe`（popen） | v0.6：syslog 已作为内置 sink 引入（§4.7.1，单实例限制）；record 回调由 **sink 契约**（§4.10.5）覆盖（自定义 sink 可对接任意收集系统）；pipe 不引入（popen 子进程管理复杂） | **已决策（v0.6）**：syslog 内置、record 语义由自定义 sink 承载、pipe 不引入 | 已决策 |
-| 11 | 轮转归档命名 | `#r` 滚动重编号（logrotate 风格级联）/ `#s` 序号递增，支持零填充宽度（`#2s`），归档路径可含时间占位符 | `{base}`/`{timestamp}`/`{index}` 模板 + `max files` 清理 + `.latest` 软链（§4.6） | 本文模板更灵活可控；`rotate naming` 仅用 `{index}`（不含 `{timestamp}`）即等效 `#s` 序号风格，§4.6 已说明该等效性，无需新增机制 | 待决策 |
-| 12 | 双映射环形缓冲 | 异步消费者用 `memfd_create` + 两次 `MAP_FIXED` 双映射环形页，跨边界记录单次连续 memcpy；per-record RESERVED/COMMITTED 原子标志（Linux 专属，zlog 因 memfd 未支持 Windows） | 未规定无锁实现细节 | 可作为 Phase 1 Linux 无锁 SPSC 的**可选优化**；必须保留 macOS/Windows 通用回退（尾部分段拷贝）；因跨平台实现分叉，列为可选优化而非规范 | 待决策 |
-| 13 | shutdown/热加载线程协同 | flush/退出经队列内命令记录 + 消费者完成握手；生产者 per-thread 状态引用计数延迟释放（消费者处理完最后一条后才释放）；注：其退出路径存在忙等缺陷，近期多个修复围绕这些缝隙 | §7.5/§10.5 定义了行为，未规定机制 | **建议采纳**为实现要求（命令记录 + 条件变量握手 + 引用计数延迟释放；用条件变量而非 zlog 式忙等） | 待决策 |
-| 14 | per-thread 缓冲增长策略 | 每线程缓冲 1KB 起步、按增量增长（全局可配 `buffer min`/`buffer max`，默认上限 2MB），不缩减，稳态零 malloc；`buffer max=0` 为无上限 | `max log length`（默认 4KB）硬截断（§9）；v0.2 已定义生产者渲染上限 = `max log length` | **建议组合**：预分配 + 按需增长至 `max log length` 上限即截断（与 §9 渲染上限条款方向一致，兼得稳态零 malloc 与硬上限；避免 zlog 无上限模式的内存风险）；采纳与否仅影响 per-thread 缓冲增长策略实现 | 待决策 |
+| 11 | 轮转归档命名 | `#r` 滚动重编号（logrotate 风格级联）/ `#s` 序号递增，支持零填充宽度（`#2s`），归档路径可含时间占位符 | `{base}`/`{timestamp}`/`{index}` 模板 + `max files` 清理 + `.latest` 软链（§4.6） | 本文模板更灵活可控；`rotate naming` 仅用 `{index}`（不含 `{timestamp}`）即等效 `#s` 序号风格，§4.6 已说明该等效性，无需新增机制 | **已采纳（等效性结论维持，Phase 1 已落地 `{index}` 模板；无需新增机制）** |
+| 12 | 双映射环形缓冲 | 异步消费者用 `memfd_create` + 两次 `MAP_FIXED` 双映射环形页，跨边界记录单次连续 memcpy；per-record RESERVED/COMMITTED 原子标志（Linux 专属，zlog 因 memfd 未支持 Windows） | 未规定无锁实现细节 | 可作为 Phase 1 Linux 无锁 SPSC 的**可选优化**；必须保留 macOS/Windows 通用回退（尾部分段拷贝）；因跨平台实现分叉，列为可选优化而非规范 | **已决策：采纳（可选优化，Linux memfd 专属 + 跨平台回退保留）**，排期见 todo.md（远期） |
+| 13 | shutdown/热加载线程协同 | flush/退出经队列内命令记录 + 消费者完成握手；生产者 per-thread 状态引用计数延迟释放（消费者处理完最后一条后才释放）；注：其退出路径存在忙等缺陷，近期多个修复围绕这些缝隙 | §7.5/§10.5 定义了行为，未规定机制 | **建议采纳**为实现要求（命令记录 + 条件变量握手 + 引用计数延迟释放；用条件变量而非 zlog 式忙等） | **已决策：采纳（作为健壮性强化；现条件变量机制已满足行为定义）**，排期见 todo.md |
+| 14 | per-thread 缓冲增长策略 | 每线程缓冲 1KB 起步、按增量增长（全局可配 `buffer min`/`buffer max`，默认上限 2MB），不缩减，稳态零 malloc；`buffer max=0` 为无上限 | `max log length`（默认 4KB）硬截断（§9）；v0.2 已定义生产者渲染上限 = `max log length` | **建议组合**：预分配 + 按需增长至 `max log length` 上限即截断（与 §9 渲染上限条款方向一致，兼得稳态零 malloc 与硬上限；避免 zlog 无上限模式的内存风险）；采纳与否仅影响 per-thread 缓冲增长策略实现 | **已采纳**（落地于 Phase 1：`tls_ensure` TLS 缓冲按需增长至上限） |
 
 ### A.2 明确不采纳项（本文方案更优，记录结论）
 
@@ -1574,6 +1600,8 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 3 | reload 全量重建 | reload 重建全部 rule 并关闭重开所有 fd（未变更文件也重开，存在窗口） | 未变更 output 复用 fd，仅增删/参数变更项重建（§10.5） | 减少重开窗口与开销；语义已定义 |
 | 4 | POSIX 跨进程"锁文件" | rotater 以 `open`/`close` 充当跨进程锁（POSIX 上未实际发出任何锁系统调用，仅 Windows `CreateFile` 独占有效） | 不承诺多进程安全（§9） | 定位单进程多线程；zlog 该机制在 POSIX 上实为无效保护，不值得效仿 |
 | 5 | 通用键 value 截断 | 通用键 value 以 `sscanf %s` 截断于首个空白（仅 `default format` 特例取整行） | value 统一取 `=` 后整行（引号可包裹，§10.1） | 本文为严格超集：允许含空格的值（`time format`、`truncation marker`、路径）；zlog 风格配置在本文规则下解析结果一致 |
+| 6 | 用户自定义级别（A.1 #8，2026-09-29 决策） | `[levels]` 节自定义级别（`NAME = int[, syslog_level]`），内置级别含 NOTICE | 固定 7 级枚举（§4.1/§7.6，ABI 冻结） | 级别集稳定性优先（级别名是格式占位符/规则词法/宏族的一部分，自定义级别牵动全部词法与 ABI 面）、API 简单；如确需再评估运行时注册制 |
+| 7 | MDC（A.1 #9，2026-09-29 决策） | 每线程 MDC（put/get/remove + `%M(key)` 占位符） | 无 | 异步模式下 MDC 属生产者线程上下文，跨环携带语义复杂（va_list/渲染均不可跨线程）；请求级上下文建议调用方自行并入 `%msg` 或使用结构化字段（§4.11） |
 
 ---
 
@@ -1651,6 +1679,24 @@ docs/decision_log.md D-S1..S7）**：
    声明（append-only ABI）；`HPULOGC_MAX_SINKS`（旧宏保留为别名）；
    `[outputs]` INI 完全向后兼容；socket 骨架语义并入「未注册类型
    fail-fast」。
+
+### v0.6.1（2026-09-29）
+
+附录 A 14 项 zlog 对比项全部定案（结论依据仓库 todo.md 交叉核对与
+决策记录 D-R4/D-R5/D-R6），并按"规范先行"为两项已采纳项补规范性定义：
+
+1. §4.1 新增"级别启用查询"（规范性）：`hpulogc_level_enabled` +
+   `HPULOGC_xxx_ENABLED` 宏族；语义 = 仅级别过滤（管线步骤②），
+   不预测路由/限流/采样/溢出；未初始化恒 0；查询无副作用；
+   `HPULOGC_COMPILE_TIME_LEVEL` 裁剪同步生效（D-R4）。
+2. §7.3 新增 `hpulogc_level_enabled` 与 `hpulogc_conf_validate` 签名条目；
+   §17 P1/P2 行追加对应短语。
+3. §7.3/§11 新增配置校验定义：`hpulogc_conf_validate`（dry-run 无副作用、
+   strict 参数三态）与 `hpulogc_chk_conf` CLI（退出码 0/1/2、
+   `--strict/--lenient`、min 预设不构建）（D-R5）。
+4. 附录 A.1 状态列全量更新：#1/#2/#11/#14 已采纳（含落地位置）、
+   #5/#6/#7/#12/#13 已决策采纳（排期见仓库 todo.md）、#8/#9 已决策
+   不采纳（A.2 #6/#7 补充登记，含理由）。
 
 ---
 
