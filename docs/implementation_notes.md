@@ -545,7 +545,7 @@ shutdown）经上述 C 节验证为 TSan 干净。
 nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` stderr
 调试打印（8b91072 引入）。
 
-| P-5 | `docs/rd_v0.6.md` §4.7.3 措辞 vs `src/output/output.c` 实现（**文档级**） | 规范称 `enabled=false` 的实例"**不打开**、不参与路由"，实现为"实例与资源仍建立、仅 deliver 入口门禁（`output.c` `!b->enabled` 直接返回）" | 实现语义恰是"热重载翻转即时生效、无需重开资源"（§4.7.3 同条）的基础；`examples/conf_eg.ini` 注释按实现语义表述，规范措辞待下次规范修订时统一（`examples/conf_eg.ini` 编制时发现） |
+| P-5 | `docs/rd_v0.6.md` §4.7.3 措辞 vs `src/output/output.c` 实现（**文档级，已闭环**） | 规范称 `enabled=false` 的实例"**不打开**、不参与路由"，实现为"实例与资源仍建立、仅 deliver 入口门禁（`output.c` `!b->enabled` 直接返回）" | 实现语义恰是"热重载翻转即时生效、无需重开资源"（§4.7.3 同条）的基础；`examples/conf_eg.ini` 注释按实现语义表述，规范措辞待下次规范修订时统一（`examples/conf_eg.ini` 编制时发现）。**闭环**：rd_v0.6 v0.6.3 已按实现语义修订 §4.7.3（实例照常建立并打开资源、deliver 层门禁丢弃） |
 
 | P-4 | `src/ring/ringbuf_lockfree.c` MPMC 过期游标重同步读（**部分已修**） | 消费者游标过期（deq 已前进且环回绕）时，lf_wait_commit 的 commit 读取与生产者对同一物理位置的重写构成 TSan 可见竞争；若负载字节伪造 commit 匹配，租约 CAS 会以垃圾 total_len 推进 deq（真实正确性风险，非仅良性） | **修复（本阶段）**：lf_wait_commit 将 deq==d 新鲜度检查前置到 commit 读取之前；MPMC 认领 CAS 前再次校验 deq==d。deq==d 时生产者不可能写该物理槽位（空间检查 pos+len ≤ deq+cap 对同槽位重写恒假），且 deq 跳过 d 必须先取得 d 的租约（互斥），故「新鲜度检查 + 认领 CAS」对重用窗口封闭。修复后 correctness 封闭；残余的**良性重同步读**（检查与读取之间的极端 TOCTOU 窗口，值必被门禁丢弃）TSan 仍无法建模——`ring_stress_mpmc_discard_pressure` 在 TSan 下自跳过（同决策 4/9 先例），其余 MPMC 用例 TSan 零竞争 |
 

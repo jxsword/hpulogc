@@ -349,3 +349,26 @@
   通过判据（非决策项，按 §13.3 定案）：RSS 无增长趋势（无泄漏）、TSan
   零竞争、进度心跳无停滞（无死锁）、统计恒等式闭合；默认构建 + TSan
   构建并行。产出 `docs/perf_report_soak.md` + implementation_notes 登记。
+
+## D-R7 hpulogc_strerror 缓冲区不足语义（2026-09-29，todo.md P2 工单）
+
+- 背景：rd_v0.6 §7.3 新增错误描述 API（v0.6.3），缓冲区不足行为须在规范
+  钉死。约束：库 API 面不依赖 errno（§7.4 规范性条款）、错误码集封闭
+  （hpulogc_error_t 六值）、实现须线程安全无动态分配。
+- 选项：
+  - A. snprintf 语义——截断写入并返回完整描述所需字符数（不含 '\0'，
+    ret >= len 即截断；buf=NULL 且 len=0 作长度查询）——优点：一次调用
+    可探测所需长度；无 errno 依赖，与 §7.4 一致；两步法/一步法调用形态
+    都自然 / 缺点：返回值是长度而非状态码，出错仅参数校验一种负值
+    （buf=NULL && len!=0）；与 strerror_r 惯例不同 / 代价：无
+  - B. ERANGE 语义——不足时返回负错误码（映射 ERANGE），截断串写入或
+    未定义——优点：与 XSI strerror_r 惯例一致，返回值统一 0/负值 /
+    缺点：须复用 HPULOGC_ERR_INVALID_ARG 兼表 ERANGE（语义混载）或新增
+    错误码（破坏错误码集封闭性）；探测所需长度需迭代试探 / 代价：
+    错误码语义污染或集合扩大
+- 结论：A。
+- 理由：hpulogc API 面明确不依赖 errno（§7.4），B 需破坏该原则或污染
+  错误码集；snprintf 语义是 C23 标准化方向，长度查询形态调用便利。
+- 影响：rd_v0.6 §7.3 条目（v0.6.3）；include/hpulogc.h 声明；
+  src/core/api.c 实现；tests/unit/test_api.c 覆盖（全错误码/截断/
+  长度查询/非法参数/未知码）；后续 hpulogc_chk_conf 诊断输出可复用。
