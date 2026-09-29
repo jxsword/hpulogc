@@ -182,7 +182,7 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 | 风格 | 词法与解析参考 zlog conf.c 的实现；支持 categories、rules、formats（§10） |
 | 可扩展性 | 预留接口，后续支持 JSON/YAML |
 | 校验 | 解析失败**拒绝启动**，返回 `HPULOGC_ERR_CONFIG` + 行号 |
-| 热加载 | 编译期 `HPULOGC_ENABLE_HOT_RELOAD=ON` 时支持；Linux 优先 inotify，SIGHUP 触发需 `signal reload = true`（库安装 handler，默认关闭，§10.3）；Windows/macOS 及 inotify 不可用时，按 `hot reload interval`（秒）轮询文件 mtime/大小回退。热加载生效范围见 §10.5 |
+| 热加载 | 编译期 `HPULOGC_ENABLE_HOT_RELOAD=ON` 时支持；Linux 优先 inotify，macOS 优先 kqueue，Windows 优先 `ReadDirectoryChangesW`（父目录 + 文件名过滤 + mtime/size 快照确认）；SIGHUP 触发需 `signal reload = true`（库安装 handler，默认关闭，§10.3）；通知机制不可用时，按 `hot reload interval`（秒）轮询文件 mtime/大小回退。热加载生效范围见 §10.5 |
 | 多 Category | 编译期 `HPULOGC_ENABLE_CATEGORY=ON` 时支持 |
 
 ### 4.6 日志轮转
@@ -1616,7 +1616,7 @@ stats output = stderr
 
 ### 16.2 Phase 2 — Windows
 
-1. **实现 `src/platform/win32/`**：`SRWLOCK`/`CONDITION_VARIABLE`（有锁原语契约实现）、高精度时钟、`\` 路径与 UTF-8↔UTF-16 转换、文件 API 差异（`_commit` 对应 fsync；轮转清理用 `FindFirstFile` 系实现目录扫描语义）、无 inotify → 按 `hot reload interval` 轮询 mtime/大小。
+1. **实现 `src/platform/win32/`**：`SRWLOCK`/`CONDITION_VARIABLE`（有锁原语契约实现）、高精度时钟、`\` 路径与 UTF-8↔UTF-16 转换、文件 API 差异（`_commit` 对应 fsync；轮转清理用 `FindFirstFile` 系实现目录扫描语义）、配置监视用 `ReadDirectoryChangesW`（父目录 + 文件名过滤 + mtime/size 快照确认，D-R10），不可用时回退按 `hot reload interval` 轮询 mtime/大小。
 2. **实现 `src/atomic/atomic_msvc.h`**：C99+ 全部语言标准统一使用 MSVC `Interlocked*`（MinGW-w64 亦通过 `intrin.h` 使用同一族，保证 Windows 后端唯一，见 §4.3）。
 3. **MSVC 适配**：`/W4` 零警告、`##__VA_ARGS__` 兼容策略落地（§7.3）、`file perms`/`dir perms`/`symlink latest` 忽略并输出警告（§4.7）、默认换行 `\r\n`（§12）、控制台启用 VT 处理（`ENABLE_VIRTUAL_TERMINAL_PROCESSING`）以支持 ANSI 彩色（§4.7）。
 4. **完成 Windows CI**（MSVC/MinGW × x64）。

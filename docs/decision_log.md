@@ -395,3 +395,35 @@
 - 结论：缓存选 A；修饰符范围选 C。
 - 理由：A 的常驻代价是每线程约 1KB 量级（相对 per-thread 渲染缓冲已存在的量级可忽略），换取缓存语义简单且与 A.1 #1 一致；B 无任何规范收益。C 与 D 的取舍在于规范可预测性——"封闭全清单 + 未列明不支持"是本文一贯基线（A.1 #7 同款），D 引入例外使规范面更大而收益存疑。
 - 影响：src/format/format.h（`HPU_FMT_CACHE_SLOTS`、`hpu_fmt_action_t` 修饰符字段）、src/format/format.c（`render_time` 选槽、`parse_modifier`/`modifier_finish`）、src/core/pipeline.c（TLS 存储类型不变）、docs/rd_v0.6.md §10.3/§12（v0.6.4）、tests/unit/test_format.c、tests/unit/test_ini.c、tests/unit/test_conf_validate.c、tests/integration/test_pipeline.c；实现层明细见 implementation_notes「`!LEVEL` 取反匹配与占位符扩展（rd_v0.6 v0.6.4）实现自由度登记」（F-1..F-7）。
+
+## D-R10 Windows watcher 通知化的契约扩展方式（2026-09-29，工单「Windows watcher 原生化 + MinGW CI + 分发基准 + 包管理 recipe」）
+
+- 背景：`win32_watcher.c` 原为恒轮询（mtime/size + Sleep 分片），需以
+  `ReadDirectoryChangesW` 对齐 Linux inotify / macOS kqueue 的通知语义
+  （平台对称）。RDC 后端需要三样状态：父目录 HANDLE、OVERLAPPED 事件
+  （含常驻通知缓冲，须跨 wait 调用存活）、后端标志；而
+  `hpu_watcher_t`（src/platform/hpu_watcher.h）是三平台共享的冻结契约
+  结构体（rd_v0.6 §16.1），现无字段可容纳。约束：wait 由 hotreload 以
+  ≤200ms 步长驱动、join 后才 stop，无需停止事件；wait 1/0/-1 三态、
+  基线语义、删除等效变化语义不得变。
+- 选项：
+  - A. 复用现有字段（fd 装 HANDLE、watch_fd 装 OVERLAPPED 事件、
+    use_inotify 兼作 RDC 标志）——优点：契约头零改动、免规范修订 /
+    缺点：x64 上 fd 是 int（4 字节）装 8 字节 HANDLE 必截断，技术上
+    不可行；语义扭曲不可维护 / 代价：无
+  - B. 新增平台字段（`void* dir_handle; void* rdc_io; int use_rdc;`，
+    用 void* 保持头文件平台无关）+ 规范修订——优点：类型正确；与
+    linux/darwin 的 use_inotify/use_kqueue 标志模式一致；结构体为内部
+    布局（不安装、非公共 ABI），各平台只编译自己的 TU，无跨平台冲突 /
+    缺点：触碰冻结契约，须走规范修订 / 代价：头 +8 行；hpu_watcher.h、
+    win32_platform.h 注释、rd_v0.6 §4.5/§16.2 三处文档同步
+  - C. 不通知化，仅缩短轮询间隔——优点：零契约风险 / 缺点：不解决
+    平台对称目标，todo 工单无法关闭 / 代价：后续仍要做
+- 结论：B。
+- 理由：契约"冻结"是流程约定，`hpu_watcher_t` 实为内部实现细节
+  （core_internal.h 持有、非安装头），扩展实际风险很低；任务书明确
+  预期"契约需要小扩展，走规范修订"；A 有 x64 截断硬伤，C 不达目标。
+- 影响：src/platform/hpu_watcher.h（字段扩展）、
+  src/platform/win32/win32_watcher.c（RDC 后端 + 轮询回退 +
+  运行时降级）、src/platform/win32/win32_platform.h 注释、
+  docs/rd_v0.6.md §4.5/§16.2；热加载对外行为（§10.5）无变化。

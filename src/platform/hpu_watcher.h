@@ -5,8 +5,8 @@
  * Linux uses inotify and macOS uses kqueue (EVFILT_VNODE); each falls
  * back to polling (mtime + size) when the native mechanism cannot be
  * initialized. The choice is made at start time by the platform
- * implementation. Windows polls (no VNODE-style contract notification
- * is used for the config file).
+ * implementation. Windows prefers ReadDirectoryChangesW on the parent
+ * directory and falls back to polling the same way (spec 4.5/16.2).
  */
 
 #ifndef HPU_WATCHER_H
@@ -30,6 +30,12 @@ typedef struct hpu_watcher {
     uint64_t last_mtime_ns; /*!< Poll fallback: last modification time */
     int64_t  last_size;     /*!< Poll fallback: last file size */
     int  primed;          /*!< Poll fallback: baseline snapshot taken */
+    void* dir_handle;     /*!< Win32 only: parent directory handle for
+                               ReadDirectoryChangesW (NULL otherwise) */
+    void* rdc_io;         /*!< Win32 only: backend-private OVERLAPPED and
+                               notification buffer (NULL otherwise) */
+    int  use_rdc;         /*!< Win32: non-zero when the
+                               ReadDirectoryChangesW backend is active */
 } hpu_watcher_t;
 
 /**
