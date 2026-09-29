@@ -1,0 +1,81 @@
+# ============================================================================
+# hpulogc CI (Windows MinGW-w64)
+#
+# Sibling of win_msvc.yml: validates the Windows platform layer under the
+# MinGW-w64 GCC path (README-declared support, previously CI-uncovered).
+# The gate is GCC's -Wall -Wextra (already wired by CMake for non-MSVC
+# compilers; a 'warning:' grep gate, NOT the MSVC 'warning C' pattern).
+#
+# Start-small matrix per the work order: {C99, C11} x the default
+# concurrency combination (locked/MPSC). Widen with lockfree/SPSC/MPMC
+# combinations once green.
+#
+# Uses the mingw-w64 gcc preinstalled on the GitHub windows-2025 runner
+# image together with Ninja (both on PATH); actions/checkout only, no
+# third-party actions (same policy as ci.yml / win_msvc.yml).
+#
+# Notes:
+#   - ws2_32 comes via HPULOGC_PLATFORM_LINK_LIBS (already wired; the
+#     ring test binaries re-add it explicitly because $<TARGET_OBJECTS>
+#     does not propagate link dependencies).
+#   - WIN32_LEAN_AND_MEAN/NOMINMAX are defined globally by CMake for the
+#     Windows platform, so winsock2/windows.h coexistence is handled.
+# ============================================================================
+
+name: CI (Windows MinGW-w64)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+jobs:
+  mingw-matrix:
+    name: mingw c${{ matrix.std }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        std: [99, 11]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Show toolchain
+        run: gcc --version
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Release -DHPULOGC_C_STANDARD=${{ matrix.std }} -DHPULOGC_BUILD_EXAMPLES=OFF
+          exit $LASTEXITCODE
+      - name: Build
+        run: |
+          cmake --build build 2>&1 | Tee-Object -FilePath build.log
+          exit $LASTEXITCODE
+      - name: Zero-warning gate (GCC -Wall -Wextra)
+        run: |
+          $warns = Select-String -Path build.log -Pattern 'warning:'
+          if ($warns) {
+            $warns | Select-Object -First 10 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+            Write-Output "::error::$($warns.Count) compiler warnings present (zero-warning gate)"
+            exit 1
+          }
+      - name: Test
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | Tee-Object -FilePath ctest.log
+          exit $LASTEXITCODE
+      - name: Failure annotations
+        if: failure()
+        run: |
+          if (Test-Path ctest.log) {
+            Write-Output "::group::ctest failure summary"
+            Select-String -Path ctest.log -Pattern '\*\*\*Failed|tests failed' | Select-Object -First 40 | ForEach-Object { $_.Line }
+            Write-Output "::endgroup::"
+            Select-String -Path ctest.log -Pattern 'FAIL \[' | Select-Object -First 20 | ForEach-Object { Write-Output ("::error::" + $_.Line) }
+          }
