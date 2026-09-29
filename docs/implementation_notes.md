@@ -581,3 +581,27 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 - `hpulogc_build_info_t` 未新增 sinks 字段（无规范性要求，避免 ABI 扰动；
   如需可按 append-only 规则追加）。
 - `hpu_output_write_direct`（v0.2 死代码）已随 vtable 化删除。
+
+---
+
+# 网络型 sink 第一期（TCP/UDP，rd_v0.6 v0.6.2 §4.10.8）实现自由度登记
+
+> 任务书 §五.1 授权"实现自由度自定后登记"。以下各项均不触及规范性语义
+> （规范已定案的部分照办），仅登记规范未钉死的实现选择与理由。
+
+| # | 自由度 | 决定 | 理由与代价 |
+|---|--------|------|-----------|
+| N-1 | start fail-fast vs 懒连接 | **保持 fail-fast**（首连/解析失败 → `HPULOGC_ERR_IO`） | 配置错误早暴露（与 rollingfile 打开语义一致）；"远端暂不可达"场景由运行期重连机制覆盖。代价：远端暂不可达时 init 失败，调用方需自行重试 init 或先建好远端 |
+| N-2 | UDP 截断 vs 分片 | **截断至 mtu 后仍投递**，该事件计 `failed` 不计 `written` | 分片放大丢包（规范已定不做）；"仍投递"使接收方收到可解析的截断行，记账如实反映降级。替代方案（直接丢弃）使接收方少一条完整可解析记录，且无法区分"超长"与"丢弃"，弃 |
+| N-3 | 事件借用与深拷贝边界 | 发送全部在回调内同步完成，**无跨回调保留**，故除 TCP 合并批缓冲外不做额外深拷贝 | §4.10.4 要求"跨出回调保留必须深拷贝"——本实现没有跨回调保留场景（异步路径由第二级队列已完成深拷贝；重连采用丢弃语义不缓存事件）。TCP emit_batch 的 64KB 合并缓冲即 priv 预分配缓冲（稳态零 malloc） |
+| N-4 | TCP emit_batch 记账口径 | 合并行帧写入；**发送出错时已离开进程的行计 written、仍在合并缓冲内的行计 failed**（返回值表达部分成功） | 比整批失败口径（返回 -1）更精确；代价：断线瞬间接收端可能出现撕裂行（规范已明示接收方丢弃无终止符残行） |
+| N-5 | connect 无超时参数 | v1 使用阻塞 connect，不引入 `connect timeout` 配置键 | 避免规范外新增键；阻塞面由"推荐 async=on"覆盖（start 仍在调用方线程，文档已明示）。若后续需要，键加入属规范修订 |
+| N-6 | 重连不重新解析 DNS | 重连沿用 start 时解析的地址（§4.10.8 已写入规范） | 回调内 getaddrinfo 会阻塞且动态分配（违反 §4.10.4）；代价：远端 IP 长期变更需热重载重建 |
+| N-7 | UDP EAGAIN 判定路径 | socket 恒 `O_NONBLOCK`（hpu_net_dgram_open 契约保证），EAGAIN → 计 failed | 使"EAGAIN 丢弃不阻塞"语义在 emit 路径可观测，而非依赖内核缓冲恰好未满 |
+| N-8 | 测试的 fail-fast 路径选择 | `test_tcp_start_refused_fails_fast` 用**不可解析域名**（.invalid）而非 connection-refused | WSL2 localhost 中继使 loopback 已关闭端口的 connect 仍"成功"（后随 RST），refused 前提在该环境不成立；解析失败路径跨环境确定。CI Linux/macOS 上两者均可靠，取更稳健者 |
+
+## D. 网络型 sink 第一期新增缺陷登记（P-7）
+
+| 编号 | 位置 | 描述/现象 | 修复/处理 |
+|------|------|-----------|-----------|
+| P-7 | `src/output/sink_queue.c` worker sweep（**已修**，本 PR） | 第二级队列 worker 的整段 sweep `memcpy` 假设可用区间在环上连续；当 worker 阻塞于慢 `emit_batch`（网络 sink 发送阻塞是常态，async=on 场景）期间生产者推进并回绕环时，`head%cap + avail > cap` 的 sweep **越界读**（macOS ASan 捕获：64KB 队列环末尾越界读 2484 字节）。同路径第二处：生产者回绕桥接 pad（4 字节零 rec_len）落在 sweep 中部时，`sq_decode` 返回 0 使 worker **静默丢弃其后全部已出队记录**（无记账） | sweep 按 `q->cap - head%cap` 边界拆两段拷贝（线性化保序）；decode 循环将 rec_len==0 识别为 4 字节 pad 跳过，仅真损坏记录才终止 sweep。由 test_net_sinks 的 async 队列满用例（64KB 队列 + 阻塞接收端）稳定暴露 |

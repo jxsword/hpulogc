@@ -1106,16 +1106,27 @@ void hpulogc_get_build_info(hpulogc_build_info_t* info)
     info->concurrency = "mpsc";
 #endif
 #if defined(HPULOGC_SINK_SYSLOG)
+#define HPU_SINKS_PART1 "console,rollingfile,syslog"
+#else
+#define HPU_SINKS_PART1 "console,rollingfile"
+#endif
+#if defined(HPULOGC_SINK_TCP)
+#define HPU_SINKS_PART2 ",tcp"
+#else
+#define HPU_SINKS_PART2 ""
+#endif
+#if defined(HPULOGC_SINK_UDP)
+#define HPU_SINKS_PART3 ",udp"
+#else
+#define HPU_SINKS_PART3 ""
+#endif
 #if defined(HPULOGC_SINK_NULL)
-    info->sinks = "console,rollingfile,syslog,null";
+#define HPU_SINKS_PART4 ",null"
 #else
-    info->sinks = "console,rollingfile,syslog";
+#define HPU_SINKS_PART4 ""
 #endif
-#elif defined(HPULOGC_SINK_NULL)
-    info->sinks = "console,rollingfile,null";
-#else
-    info->sinks = "console,rollingfile";
-#endif
+    info->sinks = HPU_SINKS_PART1 HPU_SINKS_PART2 HPU_SINKS_PART3
+                  HPU_SINKS_PART4;
 }
 
 int hpulogc_get_sink_stats(const char* name, hpulogc_sink_stats_t* stats)

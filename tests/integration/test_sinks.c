@@ -166,7 +166,7 @@ TEST(sinks_unknown_type_fails_fast)
     setup_base();
     snprintf(cfgpath, sizeof(cfgpath), "%s_bad.ini", g_base);
     write_config("bad", "[outputs]\n"
-                        "x0 = socket, host=1.2.3.4\n");
+                        "x0 = nosuchtype, host=1.2.3.4\n");
     CHECK_EQ(hpulogc_init_from_file(cfgpath), HPULOGC_ERR_CONFIG);
     hpulogc_shutdown(); /* idempotent after failed init */
 }

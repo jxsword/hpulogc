@@ -67,9 +67,9 @@ option(HPULOGC_ENABLE_CATEGORY    "Category routing + per-category levels" ON)
 option(HPULOGC_ENABLE_THROTTLE    "Rate limiting and sampling" OFF)
 option(HPULOGC_ENABLE_SOURCE_LOC  "Capture __FILE__/__LINE__" ON)
 option(HPULOGC_LOCKFREE           "Lock-free ring buffer (else locked)" OFF)
-set(HPULOGC_SINKS "console,rollingfile,syslog,null" CACHE STRING
-    "Built-in sink whitelist: console,rollingfile always on; syslog/null\
-can be trimmed (rd_v0.6 §4.7.4); syslog is POSIX-only")
+set(HPULOGC_SINKS "console,rollingfile,syslog,tcp,udp,null" CACHE STRING
+    "Built-in sink whitelist: console,rollingfile always on; syslog/tcp/udp/null\
+can be trimmed (rd_v0.6 §4.7.4); syslog/tcp/udp are POSIX-only")
 set(HPULOGC_CONCURRENCY "MPSC" CACHE STRING
     "Concurrency mode: SPSC | MPSC | MPMC")
 set(HPULOGC_COMPILE_TIME_LEVEL "TRACE" CACHE STRING
@@ -280,10 +280,10 @@ endif()
 string(REPLACE "," ";" HPULOGC_SINKS_LIST "${HPULOGC_SINKS}")
 foreach(sink IN LISTS HPULOGC_SINKS_LIST)
     string(TOUPPER "${sink}" sink_uc)
-    if(NOT sink_uc MATCHES "^(CONSOLE|ROLLINGFILE|SYSLOG|NULL)$")
+    if(NOT sink_uc MATCHES "^(CONSOLE|ROLLINGFILE|SYSLOG|NULL|TCP|UDP)$")
         message(FATAL_ERROR
             "HPULOGC_SINKS: unknown sink type '${sink}' (allowed: "
-            "console, rollingfile, syslog, null)")
+            "console, rollingfile, syslog, tcp, udp, null)")
     endif()
     if(sink_uc STREQUAL "NULL")
         list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_NULL=1)
@@ -291,9 +291,22 @@ foreach(sink IN LISTS HPULOGC_SINKS_LIST)
     if(sink_uc STREQUAL "SYSLOG")
         set(HPULOGC_SINK_SYSLOG_WANTED 1)
     endif()
+    if(sink_uc STREQUAL "TCP")
+        set(HPULOGC_SINK_TCP_WANTED 1)
+    endif()
+    if(sink_uc STREQUAL "UDP")
+        set(HPULOGC_SINK_UDP_WANTED 1)
+    endif()
 endforeach()
 if(NOT WIN32 AND HPULOGC_SINK_SYSLOG_WANTED)
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_SYSLOG=1)
+endif()
+# Network sinks (rd_v0.6 §4.10.8): POSIX-only in v1, like syslog.
+if(NOT WIN32 AND HPULOGC_SINK_TCP_WANTED)
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_TCP=1)
+endif()
+if(NOT WIN32 AND HPULOGC_SINK_UDP_WANTED)
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_UDP=1)
 endif()
 if(HPULOGC_CONCURRENCY_UC STREQUAL "SPSC")
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_SPSC=1)
@@ -354,7 +367,10 @@ if(HPU_PLATFORM STREQUAL "windows")
         src/platform/win32/win32_tls.c
         src/platform/win32/win32_signal.c
         src/platform/win32/win32_watcher.c
+        src/platform/win32/win32_net.c
     )
+    # win32_net.c (hpu_net contract backend, MSVC-compile-gated) needs it.
+    list(APPEND HPULOGC_PLATFORM_LINK_LIBS ws2_32)
 elseif(HPU_PLATFORM STREQUAL "darwin")
     # macOS (Phase 3): reuses the POSIX shared layer with two darwin
     # replacements - darwin_sync (macOS pthread_condattr_setclock only
@@ -371,6 +387,7 @@ elseif(HPU_PLATFORM STREQUAL "darwin")
         src/platform/posix/posix_path.c
         src/platform/posix/posix_tls.c
         src/platform/posix/posix_signal.c
+        src/platform/posix/posix_net.c
         src/platform/posix/posix_watcher_poll.c
     )
 else()
@@ -383,6 +400,7 @@ else()
         src/platform/posix/posix_tls.c
         src/platform/posix/posix_tid.c
         src/platform/posix/posix_signal.c
+        src/platform/posix/posix_net.c
         src/platform/posix/posix_watcher_poll.c
     )
     if(HPU_PLATFORM STREQUAL "linux")
@@ -406,7 +424,8 @@ add_library(hpulogc_platform OBJECT ${HPULOGC_PLATFORM_SOURCES})
 target_include_directories(hpulogc_platform PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(hpulogc_platform PRIVATE
-    hpulogc_build_defs Threads::Threads)
+    hpulogc_build_defs Threads::Threads
+    ${HPULOGC_PLATFORM_LINK_LIBS})
 target_compile_options(hpulogc_platform PRIVATE ${HPULOGC_WARNING_FLAGS})
 set_target_properties(hpulogc_platform PROPERTIES
     POSITION_INDEPENDENT_CODE ON)
@@ -436,6 +455,12 @@ set(HPULOGC_CORE_SOURCES
 if(NOT WIN32)
     list(APPEND HPULOGC_CORE_SOURCES src/output/sink_syslog.c)
 endif()
+if(NOT WIN32 AND HPULOGC_SINK_TCP_WANTED)
+    list(APPEND HPULOGC_CORE_SOURCES src/output/sink_tcp.c)
+endif()
+if(NOT WIN32 AND HPULOGC_SINK_UDP_WANTED)
+    list(APPEND HPULOGC_CORE_SOURCES src/output/sink_udp.c)
+endif()
 
 if(NOT HPULOGC_ENABLE_INI)
     list(REMOVE_ITEM HPULOGC_CORE_SOURCES src/conf/ini.c)
@@ -462,6 +487,10 @@ target_include_directories(hpulogc
 
 target_link_libraries(hpulogc PRIVATE $<BUILD_INTERFACE:hpulogc_build_defs>
     PUBLIC Threads::Threads)
+# $<TARGET_OBJECTS> does not propagate the platform object library's own
+# link dependencies; repeat them on the consuming targets (win32_net.c
+# needs ws2_32; empty list on POSIX).
+target_link_libraries(hpulogc PRIVATE ${HPULOGC_PLATFORM_LINK_LIBS})
 # The trim threshold is a public macro: propagate to consumers.
 target_compile_definitions(hpulogc PUBLIC
     HPULOGC_COMPILE_TIME_LEVEL=${HPULOGC_COMPILE_TIME_LEVEL_NUMERIC})
@@ -505,6 +534,7 @@ if(HPULOGC_BUILD_SHARED)
         HPULOGC_BUILDING_DLL=1)
     target_link_libraries(hpulogc_shared PRIVATE $<BUILD_INTERFACE:hpulogc_build_defs>
         PUBLIC Threads::Threads)
+    target_link_libraries(hpulogc_shared PRIVATE ${HPULOGC_PLATFORM_LINK_LIBS})
     target_compile_definitions(hpulogc_shared PUBLIC
         HPULOGC_COMPILE_TIME_LEVEL=${HPULOGC_COMPILE_TIME_LEVEL_NUMERIC})
     target_compile_options(hpulogc_shared PRIVATE ${HPULOGC_WARNING_FLAGS})

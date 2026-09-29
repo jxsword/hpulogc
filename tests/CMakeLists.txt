@@ -50,6 +50,11 @@ function(hpu_add_ring_test name impl_name impl_num conc_num)
         ${CMAKE_SOURCE_DIR}/src/ring/ringbuf_${impl_name}.c
         $<TARGET_OBJECTS:hpulogc_platform>)
     target_link_libraries(${name} PRIVATE hpu_test_util hpulogc_build_defs)
+    if(WIN32)
+        # The platform objects include win32_net.c (hpu_net contract);
+        # object-library link deps do not propagate via $<TARGET_OBJECTS>.
+        target_link_libraries(${name} PRIVATE ${HPULOGC_PLATFORM_LINK_LIBS})
+    endif()
     target_compile_options(${name} PRIVATE ${HPULOGC_WARNING_FLAGS})
     if(HPU_SANITIZER_FLAGS)
         target_compile_options(${name} PRIVATE ${HPU_SANITIZER_FLAGS})
@@ -123,6 +128,12 @@ if(NOT WIN32 AND NOT HPULOGC_SANITIZER MATCHES "thread"
 endif()
 if(HPULOGC_ENABLE_INI)
     hpu_add_test_binary(test_sinks SRCS integration/test_sinks.c)
+endif()
+if(NOT WIN32 AND HPULOGC_ENABLE_INI)
+    # Network sinks (rd_v0.6 §4.10.8): POSIX-only in v1, loopback
+    # self-send tests. Internally noop-gated per HPULOGC_SINK_TCP/UDP
+    # so trimmed HPULOGC_SINKS builds still pass.
+    hpu_add_test_binary(test_net_sinks SRCS integration/test_net_sinks.c)
 endif()
 hpu_add_test_binary(test_sink_async SRCS integration/test_sink_async.c)
 hpu_add_test_binary(test_signal_safe SRCS integration/test_signal_safe.c)
