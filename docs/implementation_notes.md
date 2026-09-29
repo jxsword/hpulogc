@@ -618,3 +618,9 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | S-3 | console 批量错误记账口径 | 批内任一 fwrite 失败 → 整批计 failed（返回 0） | stdio 不报告单次 fwrite 内的部分进度，逐事件记账需放弃合并（回退逐条 emit）；控制台写失败（EPIPE 等）罕见且 ferror 粘滞，整批口径可接受。对比：TCP 采用逐行口径（N-4），因其部分写是常态 |
 | S-4 | console 合并缓冲容量 | priv 内联 64KB（预分配，create 时 calloc） | 与 TCP 合并缓冲同规格（N-3）；超长行（> 64KB，max_log_length 上限 65536 时可发生）走"先清缓冲、直写该行"的旁路，行永不跨边界拆分（LINE_ATOMIC 契约）。代价：console 实例常驻多 64KB |
 | S-5 | null emit_batch 返回口径 | 直接返回 `(int)n` | n 受 batch_max 上界约束（≤ 数千），int 溢出不可能；零成本批量化使 async null 基线反映纯分发开销 |
+
+# 24h 压测前置工单（PR #17/#16/#18）新增缺陷登记（P-6）
+
+| 编号 | 位置 | 描述/现象 | 修复/处理 |
+|------|------|-----------|-----------|
+| P-6 | `src/core/consumer.c` `hpu_consumer_flush` / MPMC flush 握手（**已修**，PR #17） | ack 原为"跑过 idle 任务"的计数语义：MPMC 下消费者取走记录（head 推进 → 环空）后被抢占时，其他消费者 ack + 环空使 flusher 在记录仍在途时提前返回 OK（表象：written < accepted 且 dropped=0，sync 后补齐——记录未丢失，但 flush 语义失信）。拥塞复现 4/60 次 | 修复：ack 前置环空观察，每消费者只为自己背书（per-consumer ack 计数）；修复后拥塞用例 60/60 零失败；TSan 零竞争（缺陷为逻辑语义，非数据竞争）。CI 曾在两个不相关 PR 各触发一次（linux gcc / macos clang）。注记：`hpulogc_flush` 的 5 s 界限（shutdown_timeout_ms）在重载 runner 下仍可出现良性超时（ERR_IO），test_net_sinks 已加注释说明其级联表象（2026-09-29 main CI macos c99 lockfree MPSC 一次性观察，同 commit PR CI 与本地门禁全绿） |
