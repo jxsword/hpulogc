@@ -21,8 +21,8 @@
  *                    (symlink_latest ignored + warning).
  *   - hpu_path:      backslash separators, UTF-8 <-> UTF-16 conversion
  *                    (WideCharToMultiByte) around every file API.
- *   - hpu_watcher:   always the polling backend (mtime + size at
- *                    hot reload interval); no inotify.
+ *   - hpu_watcher:   ReadDirectoryChangesW on the parent directory with
+ *                    mtime/size polling fallback (spec 4.5/16.2).
  *   - hpu_tid:       GetCurrentThreadId().
  *   - hpu_tls:       TlsAlloc/TlsGetValue/TlsSetValue/TlsFree.
  *   - hpu_signal:    no SIGHUP; hpu_signal_install_hup() returns -1.
