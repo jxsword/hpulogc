@@ -198,6 +198,7 @@ TEST(routing_table_from_spec)
 
 TEST(negate_level_route_from_ini)
 {
+#if HPULOGC_ENABLE_INI
     char logpath[300];
     char cfgfile[300];
     char text[1024];
@@ -248,6 +249,7 @@ TEST(negate_level_route_from_ini)
     }
     hpulogc_shutdown();
     hpu_test_unlink(logpath);
+#endif /* HPULOGC_ENABLE_INI: min preset has no ini routing */
 }
 
 TEST(default_fallback_outputs)
