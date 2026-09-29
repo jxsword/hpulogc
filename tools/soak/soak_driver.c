@@ -48,7 +48,8 @@
 /** @brief glibc printf lacks %llu portability guarantees we need; cast to
  *         unsigned long long and use %llu (C99 printf is fine). */
 
-static volatile sig_atomic_t g_stop = 0;   /*!< Stop flag for producers */
+static int g_stop = 0;   /*!< Stop flag for producers (__atomic accessed;
+                              plain volatile is not a TSan sync primitive) */
 static unsigned long long g_stalls = 0;    /*!< Heartbeat stall count */
 static unsigned long long g_violations = 0; /*!< Accounting violations */
 
@@ -112,7 +113,7 @@ static void* producer_main(void* raw)
     fields[0].value.type = HPULOGC_FIELD_U64;
     fields[1].value.type = HPULOGC_FIELD_STR;
 
-    while (!g_stop) {
+    while (!__atomic_load_n(&g_stop, __ATOMIC_ACQUIRE)) {
         unsigned long long i = ctx->count;
         int r = (int)(rand_r(&seed) & 63u);
 
@@ -351,7 +352,7 @@ int main(int argc, char** argv)
     }
 
     /* Stop producers, drain everything, final identity check. */
-    g_stop = 1;
+    __atomic_store_n(&g_stop, 1, __ATOMIC_RELEASE);
     for (i = 0; i < producers; i++) {
         pthread_join(th[i], NULL);
     }
