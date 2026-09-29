@@ -265,6 +265,10 @@ TEST(net_udp_mtu_truncate)
 
     CHECK_EQ(hpulogc_init_from_file(cfgpath), HPULOGC_OK);
     HPULOGC_INFO("t", "%s", bigmsg); /* rendered line >> mtu=576 */
+    /* hpulogc_flush only surfaces the ring-drain handshake result (core.c
+     * consumer flush, 5 s bound); a CHECK failure here aborts the case
+     * before shutdown, so later cases cascade with ERR_STATE and must not
+     * be read as their own root cause. */
     CHECK_EQ(hpulogc_flush(), HPULOGC_OK);
     CHECK_EQ(hpulogc_get_sink_stats("u0", &st), HPULOGC_OK);
     CHECK_EQ(st.written, 1); /* handed off, but degraded (below) */
