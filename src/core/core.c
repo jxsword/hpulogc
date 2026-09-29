@@ -960,6 +960,44 @@ int hpulogc_set_level_for_category(const char* category,
 #endif
 }
 
+int hpulogc_level_enabled(const char* category, hpulogc_level_t level)
+{
+    uint32_t threshold;
+#if HPULOGC_ENABLE_CATEGORY
+    const char* match_cat = (category != NULL && category[0] != '\0')
+                                ? category : "*";
+    size_t match_len = strlen(match_cat);
+#endif
+
+    /* Uninitialized / after shutdown: write APIs silently drop, so nothing
+     * can pass the filter (decision D-R4: answer 0, never an error code —
+     * the gate macros treat any non-zero as enabled). */
+    if (hpu_rt_state_load() != HPU_RT_RUNNING) {
+        return 0;
+    }
+    if (level < HPULOGC_LEVEL_TRACE || level > HPULOGC_LEVEL_FATAL) {
+        return 0; /* OFF or invalid as a record level: dropped */
+    }
+
+    /* Mirror the pipeline level filter (pipeline step 2) without its
+     * side effects: find-only lookup, no category registration, no
+     * throttle tokens consumed. The override byte is advisory per the
+     * registry contract (same read as the write path). */
+    threshold = hpu_at_load_u32(&g_rt.level_atomic, HPU_MO_ACQUIRE);
+#if HPULOGC_ENABLE_CATEGORY
+    {
+        hpu_reg_entry_t* slot = hpu_registry_find(match_cat, match_len);
+        if (slot != NULL && slot->level_override != HPU_REG_NO_OVERRIDE &&
+            (int)slot->level_override > (int)level) {
+            return 0;
+        }
+    }
+#else
+    (void)category;
+#endif
+    return (int)level >= (int)threshold ? 1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Build info / stats                                                  */
 /* ------------------------------------------------------------------ */

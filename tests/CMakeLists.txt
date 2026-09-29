@@ -110,6 +110,7 @@ hpu_add_test_binary(test_ini SRCS unit/test_ini.c)
 hpu_add_test_binary(test_format SRCS unit/test_format.c)
 hpu_add_test_binary(test_rotate SRCS unit/test_rotate.c)
 hpu_add_test_binary(test_lifecycle SRCS unit/test_lifecycle.c)
+hpu_add_test_binary(test_api SRCS unit/test_api.c)
 hpu_add_test_binary(test_pipeline SRCS integration/test_pipeline.c)
 if(NOT WIN32 AND NOT HPULOGC_SANITIZER MATCHES "thread"
    AND HPULOGC_ENABLE_INI)
