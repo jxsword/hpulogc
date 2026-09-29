@@ -123,10 +123,23 @@ static void consumer_idle_tasks(hpu_consumer_ctx_t* ctx,
     memcpy(tun->stats_file, g_rt.conf->stats_file, sizeof(tun->stats_file));
     hpu_mutex_unlock(&g_rt.conf_lock);
 
-    /* Flush handshake: everything enqueued so far has been submitted by
-     * THIS consumer; the flusher waits until every consumer acked. */
+    /* Flush handshake (defect P-6 fix): the ack must certify "this
+     * consumer's hand is empty", not merely "this consumer ran its idle
+     * tasks". idle_tasks runs after processing, so combining the
+     * ring-empty observation with the ack means: every record this
+     * consumer claimed has been dispatched (its written counter bumped)
+     * before the ack. Without the guard, a consumer that claimed the
+     * last record (head advanced, ring now empty) and was preempted
+     * before processing let the flusher — seeing ring-empty plus acks
+     * from the OTHER consumers, whose ack counters permanently satisfy
+     * the current seq — return early while records were still in
+     * flight (observed as written < accepted with dropped == 0 under
+     * CPU congestion; MPMC only: with a single consumer the acking
+     * consumer is the claiming consumer, so the window cannot open). */
     req = hpu_at_load_u64(&g_rt.flush_req, HPU_MO_ACQUIRE);
-    hpu_at_store_u64(&g_rt.flush_ack[ctx->idx], req, HPU_MO_RELEASE);
+    if (g_rt.ring != NULL && hpu_ring_used(g_rt.ring) == 0) {
+        hpu_at_store_u64(&g_rt.flush_ack[ctx->idx], req, HPU_MO_RELEASE);
+    }
 
     if (stats_iv > 0 && ctx->idx == 0) {
         /* One stats report per interval, emitted by the first consumer
