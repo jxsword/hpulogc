@@ -714,6 +714,87 @@ int hpulogc_init_from_file(const char* config_path)
 #endif
 }
 
+/* ---- Configuration validation (spec rd_v0.6 v0.6.1 §7.3/§11) ---- */
+
+/** @brief Capture state for the validation diagnostics sink. */
+struct conf_validate_capture {
+    char* buf;   /*!< Error buffer (may be NULL when not capturing) */
+    size_t len;  /*!< Buffer size in bytes */
+};
+
+/**
+ * @brief Diagnostics sink capturing the FIRST message into the caller's
+ *        error buffer (later messages are dropped).
+ */
+static void conf_validate_diag_sink(void* user, const char* msg)
+{
+    struct conf_validate_capture* cap = user;
+
+    if (cap->buf != NULL && cap->len > 0 && cap->buf[0] == '\0') {
+        snprintf(cap->buf, cap->len, "%s", msg);
+    }
+}
+
+int hpulogc_conf_validate(const char* config_path, int strict,
+                          char* err_buf, size_t err_len)
+{
+#if !HPULOGC_ENABLE_INI
+    (void)config_path;
+    (void)strict;
+    (void)err_buf;
+    (void)err_len;
+    return HPULOGC_ERR_CONFIG; /* INI support not compiled in (spec 4.8) */
+#else
+    struct conf_validate_capture cap;
+    hpu_conf_t* c;
+    int rc;
+    FILE* probe;
+
+    if (config_path == NULL) {
+        return HPULOGC_ERR_INVALID_ARG;
+    }
+    if (err_buf != NULL && err_len > 0) {
+        err_buf[0] = '\0';
+    }
+
+    /* Readability check up front: hpu_conf_load_file folds "cannot read"
+     * into HPULOGC_ERR_CONFIG, but the spec promises HPULOGC_ERR_IO for an
+     * unreadable file. */
+    probe = fopen(config_path, "rb");
+    if (probe == NULL) {
+        if (err_buf != NULL && err_len > 0) {
+            snprintf(err_buf, err_len,
+                     "hpulogc: %s: cannot read configuration file\n",
+                     config_path);
+        }
+        return HPULOGC_ERR_IO;
+    }
+    fclose(probe);
+
+    if (err_buf != NULL && err_len > 0) {
+        cap.buf = err_buf;
+        cap.len = err_len;
+        g_conf_diag_sink = conf_validate_diag_sink;
+        g_conf_diag_user = &cap;
+    }
+
+    c = malloc(sizeof(*c));
+    rc = c != NULL ? hpu_conf_defaults(c) : HPULOGC_ERR_NO_MEM;
+    if (rc == 0) {
+        rc = hpu_conf_load_file(c, config_path, strict);
+        if (rc == 0) {
+            rc = hpu_conf_finalize_dry_run(c);
+        }
+        hpu_conf_free(c);
+    }
+    free(c);
+
+    g_conf_diag_sink = NULL;
+    g_conf_diag_user = NULL;
+    return rc;
+#endif
+}
+
 void hpulogc_config_default(hpulogc_config_t* cfg)
 {
     if (cfg == NULL) {

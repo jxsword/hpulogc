@@ -596,6 +596,39 @@ HPULOGC_API int hpulogc_init(const hpulogc_config_t* cfg);
 HPULOGC_API int hpulogc_init_from_file(const char* config_path);
 
 /**
+ * @brief Validate an INI configuration file without side effects.
+ *
+ * Runs the same parse + semantic validation pipeline as
+ * hpulogc_init_from_file() in dry-run mode: no log file is created or
+ * opened, nothing is registered (spec rd_v0.6 v0.6.1 §7.3/§11).
+ *
+ * @param config_path  Path to the configuration file; NULL yields
+ *                     HPULOGC_ERR_INVALID_ARG.
+ * @param strict       -1: the file's own `strict init` key governs unknown
+ *                     keys (two-pass parse, spec 10.4); 0: lenient;
+ *                     1: strict (overrides the file value).
+ * @param err_buf      Optional buffer receiving the FIRST diagnostic line
+ *                     ("hpulogc: file:line: reason") on failure; the first
+ *                     line only, truncated to @p err_len bytes with a NUL
+ *                     terminator. May be NULL. Further diagnostics are
+ *                     dropped (stderr output is suppressed while the
+ *                     buffer is installed).
+ * @param err_len      Size of @p err_buf in bytes; ignored when it is NULL.
+ * @return             HPULOGC_OK when the file is valid;
+ *                     HPULOGC_ERR_CONFIG when invalid;
+ *                     HPULOGC_ERR_IO when the file cannot be read;
+ *                     HPULOGC_ERR_INVALID_ARG when @p config_path is NULL;
+ *                     HPULOGC_ERR_CONFIG also when built with
+ *                     HPULOGC_ENABLE_INI=OFF (spec 4.8 trim semantics).
+ *
+ * @note Not thread-safe with respect to concurrent configuration parsing:
+ *       must not run while hpulogc_init_from_file(), a hot reload or
+ *       another hpulogc_conf_validate() call is in progress on any thread.
+ */
+HPULOGC_API int hpulogc_conf_validate(const char* config_path, int strict,
+                                      char* err_buf, size_t err_len);
+
+/**
  * @brief Initialize the logging library with built-in defaults.
  *
  * Default semantics: level=INFO, "standard" format, built-in stderr console

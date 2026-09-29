@@ -145,6 +145,33 @@ typedef struct hpu_conf {
  */
 int hpu_conf_defaults(hpu_conf_t* c);
 
+/* ---- Diagnostics sink (consumed by hpulogc_conf_validate) ---- */
+
+/**
+ * @brief Callback receiving one diagnostic line (NUL-terminated, includes
+ *        its trailing newline).
+ *
+ * @param user  Opaque pointer (g_conf_diag_user).
+ * @param msg   Diagnostic line; valid only during the callback.
+ */
+typedef void (*hpu_conf_diag_fn)(void* user, const char* msg);
+
+/** @brief Current diagnostics sink; NULL routes diagnostics to stderr. */
+extern hpu_conf_diag_fn g_conf_diag_sink;
+/** @brief Opaque pointer passed to the diagnostics sink. */
+extern void* g_conf_diag_user;
+
+/**
+ * @brief Emit one configuration diagnostic line (printf-style).
+ *
+ * Central output point for every parser/finalize diagnostic ("hpulogc:
+ * file:line: reason" and "hpulogc: config error: ..."). Routes to the
+ * installed sink or, by default, to stderr. NOT thread-safe with respect
+ * to concurrent sink swaps: callers swapping g_conf_diag_sink must not run
+ * concurrently with init/reload/validate parsing.
+ */
+void hpu_conf_diag(const char* fmt, ...);
+
 /**
  * @brief Apply a public code configuration on top of the defaults.
  *
@@ -171,6 +198,18 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg);
  * @return   0 or HPULOGC_ERR_CONFIG / HPULOGC_ERR_IO / HPULOGC_ERR_NO_MEM.
  */
 int hpu_conf_finalize(hpu_conf_t* c);
+
+/**
+ * @brief Finalize in dry-run mode: full semantic validation without
+ *        opening any file output (no side effects).
+ *
+ * Used by hpulogc_conf_validate(); every check of hpu_conf_finalize()
+ * runs except open_outputs.
+ *
+ * @param c  Snapshot to finalize.
+ * @return   0 or HPULOGC_ERR_CONFIG / HPULOGC_ERR_NO_MEM.
+ */
+int hpu_conf_finalize_dry_run(hpu_conf_t* c);
 
 /**
  * @brief Finalize for hot reload with fd reuse.
