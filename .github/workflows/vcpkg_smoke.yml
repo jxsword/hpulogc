@@ -1,0 +1,69 @@
+# ============================================================================
+# hpulogc CI (vcpkg smoke, decision D-R9)
+#
+# Validates the in-repo overlay port end to end on the primary audience
+# platform (windows-2025):
+#   1. manifest-mode `vcpkg install` at the repo root resolves the
+#      "hpulogc" dependency from ports/hpulogc (vcpkg-configuration.json
+#      overlay) and builds it through the project's CMake install rules;
+#   2. a minimal consumer project (scripts/vcpkg_smoke) configures with
+#      the vcpkg toolchain, resolves find_package(hpulogc) against the
+#      installed package, links hpulogc::hpulogc and runs.
+#
+# vcpkg is pinned to a monthly release tag for determinism; actions/
+# checkout only, no third-party actions (same policy as the other CI
+# files). x64-windows is selected explicitly because the vcpkg default
+# triplet on Windows is x86-windows.
+# ============================================================================
+
+name: CI (vcpkg smoke)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+env:
+  VCPKG_PIN: '2026.07.29'
+
+jobs:
+  vcpkg-smoke:
+    name: vcpkg port + find_package smoke
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - name: Checkout vcpkg (${{ env.VCPKG_PIN }})
+        uses: actions/checkout@v5
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_PIN }}
+          path: vcpkg-tool
+      - name: Bootstrap vcpkg
+        run: ./vcpkg-tool/bootstrap-vcpkg.bat -disableMetrics
+      - name: Install hpulogc from overlay port (manifest mode)
+        run: |
+          $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
+          $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows-static-md'
+          & "$env:VCPKG_ROOT\vcpkg.exe" install
+          exit $LASTEXITCODE
+      - name: Configure consumer (find_package via vcpkg toolchain, MSVC)
+        run: |
+          $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
+          cmd /c "scripts\msvc_ci.bat cmake -S scripts/vcpkg_smoke -B build-smoke -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DVCPKG_MANIFEST_DIR=%CD%"
+          exit $LASTEXITCODE
+      - name: Build and run consumer (MSVC)
+        run: |
+          $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
+          cmd /c "scripts\msvc_ci.bat cmake --build build-smoke"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd /c "scripts\msvc_ci.bat ctest --test-dir build-smoke --output-on-failure"
+          exit $LASTEXITCODE

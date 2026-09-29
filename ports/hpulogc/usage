@@ -1,0 +1,4 @@
+hpulogc provides CMake targets:
+
+    find_package(hpulogc CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE hpulogc::hpulogc)

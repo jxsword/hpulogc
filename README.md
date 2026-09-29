@@ -305,6 +305,40 @@ find_package(hpulogc REQUIRED)
 target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 ```
 
+### vcpkg
+
+仓库自带 vcpkg overlay port（`ports/hpulogc/`），CI 冒烟作业
+（`vcpkg_smoke.yml`）在 windows-2025 上验证 manifest 安装与
+`find_package` 全链路。
+
+**manifest 模式（推荐）**：在你的工程根目录 `vcpkg-configuration.json`
+中把本仓库的 port 目录声明为 overlay，并在 `vcpkg.json` 的依赖中加入
+`hpulogc`：
+
+```json
+// vcpkg-configuration.json
+{ "overlay-ports": ["/path/to/hpulogc/ports/hpulogc"] }
+
+// vcpkg.json
+{ "dependencies": [ "hpulogc" ] }
+```
+
+**classic 模式**：
+
+```bash
+./vcpkg install --overlay-ports=/path/to/hpulogc/ports/hpulogc hpulogc
+```
+
+随后正常使用 CMake config 包（hpulogc 的 shared 构建由自身的
+`HPULOGC_BUILD_SHARED` 选项管理，vcpkg 侧请使用静态链接 triplet
+`x64-windows-static-md`；vcpkg 默认 triplet 为 x86-windows，x64 工程
+务必显式指定）：
+
+```cmake
+find_package(hpulogc CONFIG REQUIRED)
+target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
+```
+
 ## 文档
 
 - 需求规格（规范性，唯一现行版）：`docs/rd_v0.6.md`（合并 v0.2 全文、
