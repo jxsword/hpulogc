@@ -228,6 +228,12 @@ const hpulogc_sink_ops_t* hpu_null_sink_ops(void);
 #if defined(HPULOGC_SINK_SYSLOG)
 const hpulogc_sink_ops_t* hpu_syslog_sink_ops(void);
 #endif
+#if defined(HPULOGC_SINK_TCP)
+const hpulogc_sink_ops_t* hpu_tcp_sink_ops(void);
+#endif
+#if defined(HPULOGC_SINK_UDP)
+const hpulogc_sink_ops_t* hpu_udp_sink_ops(void);
+#endif
 
 /* Test-only I/O failure injection (see docs/implementation_notes.md).
  * op: 0 = open, 1 = write, 2 = fsync; return non-zero to force the

@@ -124,6 +124,12 @@ endif()
 if(HPULOGC_ENABLE_INI)
     hpu_add_test_binary(test_sinks SRCS integration/test_sinks.c)
 endif()
+if(NOT WIN32 AND HPULOGC_ENABLE_INI)
+    # Network sinks (rd_v0.6 §4.10.8): POSIX-only in v1, loopback
+    # self-send tests. Internally noop-gated per HPULOGC_SINK_TCP/UDP
+    # so trimmed HPULOGC_SINKS builds still pass.
+    hpu_add_test_binary(test_net_sinks SRCS integration/test_net_sinks.c)
+endif()
 hpu_add_test_binary(test_sink_async SRCS integration/test_sink_async.c)
 hpu_add_test_binary(test_signal_safe SRCS integration/test_signal_safe.c)
 hpu_add_test_binary(test_diskfail SRCS integration/test_diskfail.c)

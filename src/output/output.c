@@ -107,6 +107,12 @@ void hpu_sink_registry_init(void)
 #if defined(HPULOGC_SINK_SYSLOG)
     g_types[g_type_count++] = hpu_syslog_sink_ops();
 #endif
+#if defined(HPULOGC_SINK_TCP)
+    g_types[g_type_count++] = hpu_tcp_sink_ops();
+#endif
+#if defined(HPULOGC_SINK_UDP)
+    g_types[g_type_count++] = hpu_udp_sink_ops();
+#endif
 }
 
 void hpu_sink_registry_freeze(void)

@@ -750,8 +750,8 @@ typedef struct {
     const char* concurrency;   /*!< "spsc", "mpsc" or "mpmc" */
     const char* sinks;         /*!< Comma-separated compiled-in built-in sink
                                     types (subset of "console,rollingfile,
-                                    syslog,null"; rd_v0.6 §4.7.4; appended
-                                    at the end, append-only ABI) */
+                                    syslog,tcp,udp,null"; rd_v0.6 §4.7.4;
+                                    appended at the end, append-only ABI) */
 } hpulogc_build_info_t;
 
 /**

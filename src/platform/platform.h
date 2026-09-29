@@ -9,6 +9,7 @@
  *   - hpu_time.h    high-resolution clocks and local time conversion
  *   - hpu_fs.h      file open/write/fsync/rename/unlink/dir scan, mkdir,
  *                   isatty, symlink
+ *   - hpu_net.h     socket resolve/open/send/sendto/close (network sinks)
  *   - hpu_path.h    lexical path helpers (dirname/basename/stem/normalize)
  *   - hpu_watcher.h config-file change watcher (inotify with poll fallback)
  *   - hpu_tid.h     system thread id
@@ -33,6 +34,7 @@
 #include "hpu_thread.h"
 #include "hpu_time.h"
 #include "hpu_fs.h"
+#include "hpu_net.h"
 #include "hpu_path.h"
 #include "hpu_watcher.h"
 #include "hpu_tid.h"
