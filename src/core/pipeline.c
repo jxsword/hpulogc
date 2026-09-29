@@ -300,7 +300,7 @@ static int route_lookup(const hpu_conf_t* conf, int level, const char* cat,
         for (i = 0; i < conf->rule_count; i++) {
             const hpu_conf_rule_t* r = &conf->rules[i];
 
-            if (r->min_level <= level && level <= r->max_level) {
+            if (hpu_conf_rule_level_match(r, level)) {
 #if HPULOGC_ENABLE_CATEGORY
                 if (!hpu_pipeline_selector_match(r->category, match_cat,
                                                  match_len)) {

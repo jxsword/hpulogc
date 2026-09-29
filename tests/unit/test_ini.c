@@ -293,6 +293,82 @@ TEST(conf_rule_level_range_validated)
 #endif /* INI cases */
 
 #if !HPU_TEST_SKIP_INI
+TEST(conf_rule_negate_level_matrix)
+{
+    hpu_conf_t c;
+
+    /* "!LEVEL" accepts a single exact level name (case-insensitive) */
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.!INFO = standard\n"), 0);
+    CHECK_EQ(c.rule_count, 1);
+    CHECK_EQ(c.rules[0].negate_level, 1);
+    CHECK_EQ(c.rules[0].min_level, HPULOGC_LEVEL_INFO);
+    CHECK_EQ(c.rules[0].max_level, HPULOGC_LEVEL_INFO);
+    hpu_conf_free(&c);
+
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.!trace = standard\n"), 0);
+    CHECK_EQ(c.rules[0].negate_level, 1);
+    CHECK_EQ(c.rules[0].min_level, HPULOGC_LEVEL_TRACE);
+    hpu_conf_free(&c);
+
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.!OFF = standard\n"), 0);
+    CHECK_EQ(c.rules[0].negate_level, 1);
+    CHECK_EQ(c.rules[0].min_level, HPULOGC_LEVEL_OFF);
+    hpu_conf_free(&c);
+}
+#endif /* INI cases */
+
+#if !HPU_TEST_SKIP_INI
+TEST(conf_rule_negate_invalid_forms)
+{
+    hpu_conf_t c;
+
+    /* only a single exact level may follow '!' (spec 10.3) */
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.!* = standard\n"),
+             HPULOGC_ERR_CONFIG);
+    hpu_conf_free(&c);
+
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.! = standard\n"),
+             HPULOGC_ERR_CONFIG);
+    hpu_conf_free(&c);
+
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.!INFO~FATAL = standard\n"),
+             HPULOGC_ERR_CONFIG);
+    hpu_conf_free(&c);
+
+    CHECK_EQ(hpu_conf_defaults(&c), 0);
+    CHECK_EQ(conf_parse(&c, "[rules]\napp.!loud = standard\n"),
+             HPULOGC_ERR_CONFIG);
+    hpu_conf_free(&c);
+}
+#endif /* INI cases */
+
+#if !HPU_TEST_SKIP_INI
+TEST(conf_rule_level_match_semantics)
+{
+    hpu_conf_rule_t r;
+
+    memset(&r, 0, sizeof(r));
+    r.min_level = HPULOGC_LEVEL_INFO;
+    r.max_level = HPULOGC_LEVEL_INFO;
+    CHECK(hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_INFO));
+    CHECK(!hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_WARN));
+
+    r.negate_level = 1;
+    CHECK(!hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_INFO));
+    CHECK(hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_TRACE));
+    CHECK(hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_WARN));
+    CHECK(hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_ERROR));
+    CHECK(hpu_conf_rule_level_match(&r, HPULOGC_LEVEL_FATAL));
+}
+#endif /* INI cases */
+
+#if !HPU_TEST_SKIP_INI
 TEST(conf_undefined_reference_rejected)
 {
     hpu_conf_t c;

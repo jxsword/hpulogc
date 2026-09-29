@@ -59,6 +59,47 @@ TEST(conf_validate_valid_file)
     CHECK_EQ(err[0], '\0');
 }
 
+TEST(conf_validate_accepts_negate_rule_and_new_placeholders)
+{
+    char err[256];
+    const char* p = write_cfg("v064",
+                              "[global]\n"
+                              "default format = standard\n"
+                              "default outputs = f\n"
+                              "[formats]\n"
+                              "utc = \"%g %-8level %.30msg%n\"\n"
+                              "[outputs]\n"
+                              "f = file, path=LOGPATH\n"
+                              "[rules]\n"
+                              "svc.!INFO = utc, f\n"
+                              "*.* = standard, f\n");
+
+    /* v0.6.4 lexing: "!LEVEL" rule plus %g and width/precision modifiers
+     * must validate as a legal configuration (dry-run, no side effects). */
+    CHECK_EQ(hpulogc_conf_validate(p, -1, err, sizeof(err)), HPULOGC_OK);
+    CHECK_EQ(err[0], '\0');
+}
+
+TEST(conf_validate_rejects_invalid_negate_form)
+{
+    char err[256];
+    const char* p = write_cfg("badneg",
+                              "[global]\n"
+                              "default format = standard\n"
+                              "default outputs = f\n"
+                              "[outputs]\n"
+                              "f = file, path=LOGPATH\n"
+                              "[rules]\n"
+                              "svc.!* = standard, f\n");
+
+    err[0] = 'x';
+    CHECK_EQ(hpulogc_conf_validate(p, -1, err, sizeof(err)),
+             HPULOGC_ERR_CONFIG);
+    CHECK(err[0] != 'x');
+    /* parse diagnostic carries file and line (the rule is line 7) */
+    CHECK(strstr(err, ":7:") != NULL);
+}
+
 TEST(conf_validate_invalid_reports_file_line)
 {
     char err[256];

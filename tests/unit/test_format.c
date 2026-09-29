@@ -288,3 +288,177 @@ TEST(format_crlf_newline)
     CHECK_EQ(out[1], '\r');
     CHECK_EQ(out[2], '\n');
 }
+
+/* ---- %g UTC placeholder (spec 12, v0.6.4) ------------------------- */
+
+TEST(format_utc_time_placeholder)
+{
+    /* 1700000000 s is 2023-11-14 22:13:20 UTC regardless of the host
+     * timezone; %g must go through hpu_localtime's use_utc path even
+     * when the configured timezone is local. */
+    const char* line = render("%g", 1, 4096, "...");
+
+    CHECK(line != NULL);
+    CHECK_STREQ(line, "2023-11-14 22:13:20.123456");
+}
+
+TEST(format_utc_time_ignores_timezone_setting)
+{
+    hpu_format_t fmt;
+    hpu_fmt_env_t env;
+    hpu_fmt_cache_t cache;
+    hpu_log_record_t rec;
+    char out[256];
+    size_t len = 0;
+
+    make_env(&env);
+    env.use_utc = 0; /* local timezone; %g must still render UTC */
+    make_rec(&rec);
+    hpu_fmt_cache_init(&cache);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%g"), 0);
+    CHECK_EQ(hpu_format_render(&fmt, &rec, &env, &cache, 1, 200, "...",
+                               out, sizeof(out), &len), 0);
+    hpu_format_free(&fmt);
+    CHECK_STREQ(out, "2023-11-14 22:13:20.123456");
+}
+
+TEST(format_time_and_utc_coexist_slots)
+{
+    hpu_format_t fmt;
+    hpu_fmt_env_t env;
+    hpu_fmt_cache_t cache;
+    hpu_log_record_t rec;
+    char out[512];
+    size_t len = 0;
+
+    make_env(&env);
+    env.use_utc = 0; /* %time -> slot 0 (local), %g -> slot 1 (UTC) */
+    make_rec(&rec);
+    hpu_fmt_cache_init(&cache);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%g|%time|%g"), 0);
+    CHECK_EQ(hpu_format_render(&fmt, &rec, &env, &cache, 1, 300, "...",
+                               out, sizeof(out), &len), 0);
+    hpu_format_free(&fmt);
+    /* leading and trailing %g instances must equal the UTC rendering,
+     * whatever the middle %time (slot 0, local) produced */
+    CHECK(len > strlen("2023-11-14 22:13:20.123456|") +
+                     strlen("2023-11-14 22:13:20.123456"));
+    CHECK_MEMEQ(out, "2023-11-14 22:13:20.123456|",
+                strlen("2023-11-14 22:13:20.123456|"));
+    CHECK_STREQ(out + len - strlen("2023-11-14 22:13:20.123456"),
+                "2023-11-14 22:13:20.123456");
+}
+
+TEST(format_utc_time_monotonic_matches_local)
+{
+    hpu_format_t fmt;
+    hpu_fmt_env_t env;
+    hpu_fmt_cache_t cache;
+    hpu_log_record_t rec;
+    char out[256];
+    size_t len = 0;
+
+    make_env(&env);
+    env.timestamp_source = HPULOGC_TS_MONOTONIC;
+    make_rec(&rec);
+    hpu_fmt_cache_init(&cache);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%g"), 0);
+    CHECK_EQ(hpu_format_render(&fmt, &rec, &env, &cache, 1, 200, "...",
+                               out, sizeof(out), &len), 0);
+    hpu_format_free(&fmt);
+    CHECK_STREQ(out, "0.500000"); /* same fixed output as %time */
+}
+
+/* ---- width/precision modifiers (spec 12, v0.6.4) ------------------ */
+
+TEST(format_modifier_width_padding)
+{
+    /* right-aligned by default, left with '-' */
+    CHECK_STREQ(render("%8level", 1, 4096, "..."), "    WARN");
+    CHECK_STREQ(render("%-8level", 1, 4096, "..."), "WARN    ");
+    CHECK_STREQ(render("%6pid", 1, 4096, "..."), "  4242");
+    CHECK_STREQ(render("%-6pid", 1, 4096, "..."), "4242  ");
+}
+
+TEST(format_modifier_precision_truncates)
+{
+    CHECK_STREQ(render("%.5msg", 1, 4096, "..."), "hello");
+    /* precision is byte-wise and applies to the final rendering */
+    CHECK_STREQ(render("%.3category", 1, 4096, "..."), "app");
+    CHECK_STREQ(render("%.0msg|x", 1, 4096, "..."), "|x");
+}
+
+TEST(format_modifier_width_and_precision_combined)
+{
+    /* %-20.30msg: truncate at 30, then pad to 20 on the left side */
+    CHECK_STREQ(render("%-20.30msg|end", 1, 4096, "..."),
+                "hello world         |end");
+    CHECK_STREQ(render("%20.30msg", 1, 4096, "..."),
+                "         hello world");
+}
+
+TEST(format_modifier_on_time_placeholder)
+{
+    hpu_format_t fmt;
+    hpu_fmt_env_t env;
+    hpu_fmt_cache_t cache;
+    hpu_log_record_t rec;
+    char out[256];
+    size_t len = 0;
+
+    make_env(&env);
+    make_rec(&rec);
+    hpu_fmt_cache_init(&cache);
+    /* default time format renders 26 bytes; precision 19 cuts after the
+     * seconds (microseconds included in the truncation) */
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%.19time"), 0);
+    CHECK_EQ(hpu_format_render(&fmt, &rec, &env, &cache, 1, 200, "...",
+                               out, sizeof(out), &len), 0);
+    hpu_format_free(&fmt);
+    CHECK_STREQ(out, "2023-11-14 22:13:20");
+}
+
+TEST(format_modifier_on_utc_placeholder)
+{
+    CHECK_STREQ(render("%30g", 1, 4096, "..."),
+                "    2023-11-14 22:13:20.123456");
+}
+
+TEST(format_modifier_rejects_unsupported)
+{
+    hpu_format_t fmt;
+
+    /* %n / %% / %v do not accept modifiers (spec 12) */
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%5n"), HPULOGC_ERR_CONFIG);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%5v"), HPULOGC_ERR_CONFIG);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%-3%%"), HPULOGC_ERR_CONFIG);
+    /* '0'/'+' are not valid flags; width beyond 128 is rejected */
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%0d"), HPULOGC_ERR_CONFIG);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%+5msg"), HPULOGC_ERR_CONFIG);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%200msg"), HPULOGC_ERR_CONFIG);
+    CHECK_EQ(hpu_format_compile(&fmt, "t", "%.999time"), HPULOGC_ERR_CONFIG);
+}
+
+TEST(format_modifier_json_escaping_first)
+{
+    hpu_format_t fmt;
+    hpu_fmt_env_t env;
+    hpu_fmt_cache_t cache;
+    hpu_log_record_t rec;
+    char out[512];
+    size_t len = 0;
+
+    make_env(&env);
+    make_rec(&rec);
+    rec.msg = "he said \"hi\"";
+    rec.msg_len = strlen(rec.msg);
+    hpu_fmt_cache_init(&cache);
+    /* the modifier applies after JSON escaping (spec 12) */
+    CHECK_EQ(hpu_format_compile(&fmt, "json", "%16.15msg"), 0);
+    CHECK_EQ(hpu_format_render(&fmt, &rec, &env, &cache, 1, 300, "...",
+                               out, sizeof(out), &len), 0);
+    hpu_format_free(&fmt);
+    /* escaped msg is 14 bytes (he said \"hi\"), padded to 16 with the
+     * modifier applied after JSON escaping */
+    CHECK_STREQ(out, "  he said \\\"hi\\\"");
+}

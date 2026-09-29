@@ -805,20 +805,33 @@ unknown:
 #endif /* HPULOGC_ENABLE_THROTTLE */
 
 /**
- * @brief Parse a rule level part: "*", "LEVEL" or "A~B".
+ * @brief Parse a rule level part: "*", "LEVEL", "!LEVEL" or "A~B".
  * @return 0 ok / -1 invalid.
  */
-static int parse_rule_levels(const char* part, int* min_out, int* max_out)
+static int parse_rule_levels(const char* part, int* min_out, int* max_out,
+                             int* negate_out)
 {
-    const char* tilde = strchr(part, '~');
+    const char* body = part;
+    const char* tilde;
 
-    if (strcmp(part, "*") == 0) {
+    *negate_out = 0;
+    /* "!LEVEL" negation: only a single exact level may follow (spec 10.3) */
+    if (body[0] == '!') {
+        body++;
+        if (body[0] == '\0' || body[0] == '*' || strchr(body, '~') != NULL) {
+            return -1;
+        }
+        *negate_out = 1;
+    }
+    tilde = strchr(body, '~');
+
+    if (strcmp(body, "*") == 0) {
         *min_out = HPULOGC_LEVEL_TRACE;
         *max_out = HPULOGC_LEVEL_FATAL;
         return 0;
     }
     if (tilde == NULL) {
-        if (parse_level(part, min_out) != 0) {
+        if (parse_level(body, min_out) != 0) {
             return -1;
         }
         *max_out = *min_out;
@@ -826,12 +839,12 @@ static int parse_rule_levels(const char* part, int* min_out, int* max_out)
     }
     {
         char lo[HPULOGC_MAX_NAME_LEN];
-        size_t llen = (size_t)(tilde - part);
+        size_t llen = (size_t)(tilde - body);
 
         if (llen >= sizeof(lo)) {
             return -1;
         }
-        memcpy(lo, part, llen);
+        memcpy(lo, body, llen);
         lo[llen] = '\0';
         if (parse_level(lo, min_out) != 0 ||
             parse_level(tilde + 1, max_out) != 0) {
@@ -897,7 +910,13 @@ static int parse_rules(conf_parser_t* ps, const char* key, char* value,
         snprintf(r->category, sizeof(r->category), "%s", sel);
     }
 
-    if (parse_rule_levels(level_part, &r->min_level, &r->max_level) != 0) {
+    if (parse_rule_levels(level_part, &r->min_level, &r->max_level,
+                          &r->negate_level) != 0) {
+        if (level_part[0] == '!') {
+            return parse_fail(ps, line_no,
+                              "invalid rule level: '!' must prefix a single "
+                              "level name (no '*', '~' or empty)");
+        }
         return parse_fail(ps, line_no, "invalid rule level");
     }
     if (r->min_level > r->max_level) {

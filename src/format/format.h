@@ -31,17 +31,29 @@ typedef enum {
     HPU_FA_MSG,          /*!< %msg (injection / JSON escaping applies) */
     HPU_FA_CATEGORY,     /*!< %category (JSON escaping applies) */
     HPU_FA_NEWLINE,      /*!< %n */
-    HPU_FA_FIELDS        /*!< %v - structured fields (empty when none); json
+    HPU_FA_FIELDS,       /*!< %v - structured fields (empty when none); json
                               *   formats splice in a typed "fields" member */
+    HPU_FA_TIME_UTC      /*!< %g - UTC timestamp (spec 12, v0.6.4) */
 } hpu_fmt_action_type_t;
+
+/** @brief Modifier flags (spec 12 width/precision, v0.6.4). */
+#define HPU_FMT_MOD_LEFT 0x01 /*!< '-' flag: left-align the field */
+#define HPU_FMT_MOD_PREC 0x02 /*!< precision is present */
+
+/** @brief Upper bound for modifier width/precision values (spec 12). */
+#define HPU_FMT_MOD_LIMIT 128
 
 /**
  * @brief One precompiled action.
  */
 typedef struct hpu_fmt_action {
-    uint8_t  type;     /*!< hpu_fmt_action_type_t */
-    uint32_t lit_len;  /*!< LITERAL: byte count in the pool */
-    uint32_t lit_off;  /*!< LITERAL: offset into the pool */
+    uint8_t  type;      /*!< hpu_fmt_action_type_t */
+    uint8_t  flags;     /*!< HPU_FMT_MOD_* (0 = no modifier) */
+    uint16_t width;     /*!< Modifier: minimum field width (0 = none) */
+    uint16_t precision; /*!< Modifier: max output bytes (valid only with
+                             *   HPU_FMT_MOD_PREC) */
+    uint32_t lit_len;   /*!< LITERAL: byte count in the pool */
+    uint32_t lit_off;   /*!< LITERAL: offset into the pool */
 } hpu_fmt_action_t;
 
 /**
@@ -58,15 +70,34 @@ typedef struct hpu_format {
 } hpu_format_t;
 
 /**
+ * @brief Number of per-thread time cache slots.
+ *
+ * Slot 0 caches the local-timezone rendering, slot 1 the UTC rendering,
+ * so %time and %g can coexist in one template (spec 12, v0.6.4).
+ */
+#define HPU_FMT_CACHE_SLOTS 2
+
+/**
+ * @brief One time cache slot (a single timezone flavor's rendering).
+ */
+typedef struct hpu_fmt_cache_slot {
+    int64_t cached_sec;                   /*!< Epoch second of the cached
+                                           *   text */
+    char    prefix[HPULOGC_MAX_FMT_LEN];  /*!< Text before the fraction */
+    size_t  prefix_len;                   /*!< Cached prefix length */
+    char    suffix[HPULOGC_MAX_FMT_LEN];  /*!< Text after the fraction */
+    size_t  suffix_len;                   /*!< Cached suffix length */
+    int     valid;                        /*!< Cache holds a rendered
+                                           *   second */
+} hpu_fmt_cache_slot_t;
+
+/**
  * @brief Per-thread cache for time rendering (avoids strftime per log).
+ *
+ * One slot per timezone flavor; see HPU_FMT_CACHE_SLOTS.
  */
 typedef struct hpu_fmt_cache {
-    int64_t cached_sec;               /*!< Epoch second of the cached text */
-    char    prefix[HPULOGC_MAX_FMT_LEN]; /*!< Text before the fraction */
-    size_t  prefix_len;               /*!< Cached prefix length */
-    char    suffix[HPULOGC_MAX_FMT_LEN]; /*!< Text after the fraction */
-    size_t  suffix_len;               /*!< Cached suffix length */
-    int     valid;                    /*!< Cache holds a rendered second */
+    hpu_fmt_cache_slot_t slot[HPU_FMT_CACHE_SLOTS]; /*!< [0] local, [1] UTC */
 } hpu_fmt_cache_t;
 
 /**
@@ -149,7 +180,9 @@ void hpu_format_free(hpu_format_t* fmt);
  * @param fmt              Compiled format.
  * @param rec              Record to render.
  * @param env              Render environment (config-derived).
- * @param cache            Per-thread time cache.
+ * @param cache            Per-thread time cache slots (array of
+ *                         HPU_FMT_CACHE_SLOTS entries; slot 0 local
+ *                         timezone, slot 1 UTC).
  * @param escape_injection Non-zero to apply injection escaping (json
  *                         formats ignore this).
  * @param max_line         Maximum full line length in bytes.

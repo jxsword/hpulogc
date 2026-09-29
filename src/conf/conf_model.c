@@ -548,6 +548,15 @@ int hpu_conf_find_output(const hpu_conf_t* c, const char* name)
     return -1;
 }
 
+int hpu_conf_rule_level_match(const hpu_conf_rule_t* rule, int level)
+{
+    if (rule->negate_level) {
+        /* "!LEVEL": everything except the exact level (spec 10.3) */
+        return level != rule->min_level;
+    }
+    return rule->min_level <= level && level <= rule->max_level;
+}
+
 const hpu_format_t* hpu_conf_find_format(const hpu_conf_t* c,
                                          const char* name)
 {

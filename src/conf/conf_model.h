@@ -73,8 +73,12 @@ typedef struct hpu_conf_output {
  */
 typedef struct hpu_conf_rule {
     char category[HPULOGC_MAX_NAME_LEN]; /*!< Selector: "*", name, name.* */
-    int  min_level;                      /*!< Inclusive lower bound */
+    int  min_level;                      /*!< Inclusive lower bound; for a
+                                  *   negated rule the exact level */
     int  max_level;                      /*!< Inclusive upper bound */
+    int  negate_level;                   /*!< Non-zero: "!LEVEL" rule (spec
+                                  *   10.3) - matches everything except the
+                                  *   exact level min_level == max_level */
     char format_name[HPULOGC_MAX_NAME_LEN]; /*!< Format reference */
     int  output_idx[HPULOGC_MAX_OUTPUTS];   /*!< Resolved output indices */
     size_t output_count;
@@ -268,5 +272,18 @@ const hpu_format_t* hpu_conf_find_format(const hpu_conf_t* c,
  * @brief Index of an output by name, -1 when undefined.
  */
 int hpu_conf_find_output(const hpu_conf_t* c, const char* name);
+
+/**
+ * @brief Whether a rule's level condition matches a record level.
+ *
+ * Range rules match the inclusive [min_level, max_level] span; negated
+ * rules ("!LEVEL", spec 10.3) match every level except the exact level
+ * stored in min_level == max_level.
+ *
+ * @param rule   Rule to test.
+ * @param level  Record level.
+ * @return       Non-zero when the level condition matches.
+ */
+int hpu_conf_rule_level_match(const hpu_conf_rule_t* rule, int level);
 
 #endif /* HPU_CONF_MODEL_H */

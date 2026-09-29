@@ -196,6 +196,60 @@ TEST(routing_table_from_spec)
     hpulogc_shutdown();
 }
 
+TEST(negate_level_route_from_ini)
+{
+    char logpath[300];
+    char cfgfile[300];
+    char text[1024];
+
+    setup_base();
+    snprintf(logpath, sizeof(logpath), "%s_neg.log", g_base);
+    snprintf(cfgfile, sizeof(cfgfile), "%s_%s", g_base, "neg.ini");
+    hpu_test_unlink(logpath);
+
+    /* Rule "svc.*.!INFO": matches every level except exactly INFO for the
+     * svc subtree. With no default outputs, the excluded INFO record must
+     * be dropped. */
+    snprintf(text, sizeof(text),
+             "[global]\n"
+             "level = TRACE\n"
+             "default format = minimal\n"
+             "[outputs]\n"
+             "f = file, path=%s\n"
+             "[rules]\n"
+             "svc.*.!INFO = minimal, f\n",
+             logpath);
+    write_config("neg.ini", text);
+    CHECK_EQ(hpulogc_init_from_file(cfgfile), HPULOGC_OK);
+
+    hpulogc_log(HPULOGC_LEVEL_INFO, "svc.auth", NULL, 0, NULL, "neg_no");
+    hpulogc_log(HPULOGC_LEVEL_TRACE, "svc.auth", NULL, 0, NULL,
+                "neg_yes_trace");
+    hpulogc_log(HPULOGC_LEVEL_WARN, "svc.auth", NULL, 0, NULL,
+                "neg_yes_warn");
+    hpulogc_log(HPULOGC_LEVEL_ERROR, "svc.auth", NULL, 0, NULL,
+                "neg_yes_error");
+    hpulogc_log(HPULOGC_LEVEL_FATAL, "svc.auth", NULL, 0, NULL,
+                "neg_yes_fatal");
+    /* unmatched category + no default outputs: dropped */
+    hpulogc_log(HPULOGC_LEVEL_WARN, "other", NULL, 0, NULL, "neg_other");
+    CHECK_EQ(hpulogc_flush(), HPULOGC_OK);
+
+    {
+        const char* content = read_file(logpath);
+
+        CHECK(content != NULL);
+        CHECK(strstr(content, "neg_no") == NULL);
+        CHECK(strstr(content, "neg_other") == NULL);
+        CHECK(strstr(content, "neg_yes_trace") != NULL);
+        CHECK(strstr(content, "neg_yes_warn") != NULL);
+        CHECK(strstr(content, "neg_yes_error") != NULL);
+        CHECK(strstr(content, "neg_yes_fatal") != NULL);
+    }
+    hpulogc_shutdown();
+    hpu_test_unlink(logpath);
+}
+
 TEST(default_fallback_outputs)
 {
     char logpath[300];
