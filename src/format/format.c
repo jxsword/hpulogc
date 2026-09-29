@@ -321,13 +321,13 @@ int hpu_format_compile(hpu_format_t* fmt, const char* name,
             fmt_modifier_t mod;
             size_t mod_len = parse_modifier(p + 1, &mod);
             const char* body = p + 1 + mod_len;
-            size_t name_len = 0;
-            int type = match_long_placeholder(body, &name_len);
+            size_t ph_len = 0;
+            int type = match_long_placeholder(body, &ph_len);
 
             if (type < 0 && body[0] != '\0' && body[0] != '%') {
                 /* single-letter placeholder */
                 type = placeholder_type(body[0]);
-                name_len = 1;
+                ph_len = 1;
             }
             if (type < 0 && mod_len == 0 && body[0] == '%') {
                 p += 2; /* literal %% */
@@ -361,7 +361,7 @@ int hpu_format_compile(hpu_format_t* fmt, const char* name,
                 rc = HPULOGC_ERR_NO_MEM;
                 break;
             }
-            p += 1 + mod_len + name_len;
+            p += 1 + mod_len + ph_len;
             lit_start = p;
             continue;
         }
