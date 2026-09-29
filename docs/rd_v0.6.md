@@ -1387,7 +1387,7 @@ security.* = json, audit_log, console_err
 db.WARN~FATAL = standard, main_log
 net.ERROR~FATAL = detailed, error_log, console_err
 *.ERROR~FATAL = detailed, error_log
-svc.!INFO = standard, console_out
+svc.*.!INFO = standard, console_out
 app.* = categorized, main_log
 *.* = standard, console_out
 
@@ -1434,7 +1434,7 @@ stats output = stderr
 | (db.query, ERROR) | `db.WARN~FATAL` | main_log（db 规则在前，优先命中） |
 | (net.sock, ERROR) | `net.ERROR~FATAL` | error_log + console_err |
 | (security.login, TRACE) | `security.*` | audit_log + console_err |
-| (svc.auth, WARN) | `svc.!INFO` | console_out（`!INFO` 匹配除精确 INFO 外的所有级别） |
+| (svc.auth, WARN) | `svc.*.!INFO` | console_out（`!INFO` 匹配除精确 INFO 外的所有级别） |
 | (svc.auth, INFO) | `*.*` | console_out（`!INFO` 不匹配精确 INFO，落到兜底规则） |
 | (ui.render, INFO) | `*.*` | console_out |
 
@@ -1851,8 +1851,9 @@ docs/decision_log.md D-S1..S7）**：
    级别外**的所有级别，保持本文 LEVEL 精确语义基线；与 zlog 的语义差异
    在 §10.3 明示标注（zlog 裸 LEVEL 为 ≥ 语义、`=LEVEL` 为精确，本文均
    不提供）。`!` 仅可前缀单个级别名，`!*`/`!A~B`/裸 `!` 为配置错误
-   （§10.4 同步新增错误行）；§10.3 模板示例规则与 §10.3.1 命中示例表
-   同步新增 `svc.!INFO` 行（A.1 #6）。
+   （§10.4 同步新增错误行）；可与 selector 形态组合（如 `svc.*.!INFO`，
+   以最后一个 '.' 分割 selector 与 level 部分）；§10.3 模板示例规则与
+   §10.3.1 命中示例表同步新增 `svc.*.!INFO` 行（A.1 #6）。
 2. §12 新增 `%g` UTC 时间占位符（规范性）：按 `time format` 渲染 UTC
    时间，忽略 `timezone` 设置；`time format` 内 `%f`/`%Fn` 亚秒扩展同样
    生效；`CLOCK_MONOTONIC` 源下与 `%time` 输出一致；不引入 zlog 的
