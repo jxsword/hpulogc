@@ -8,8 +8,9 @@
 - **无锁环形缓冲**（SPSC/MPSC/MPMC，discard/overwrite 溢出策略）与有锁实现二选一；MPMC 支持 N 个消费者线程（rd_v0.3）
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
 - **INI 配置**（zlog 兼容词法）+ 热加载（inotify/kqueue/SIGHUP/轮询）+ 原子替换回滚
-- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、4 类内置
-  sink（console/rollingfile/syslog/null）、per-sink 异步队列 + 专属
+- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、6 类内置
+  sink（console/rollingfile/syslog/tcp/udp/null，其中网络型 tcp/udp 为
+  v0.6.2 新增、POSIX 专属）、per-sink 异步队列 + 专属
   worker 批量写出、结构化字段（typed key=value）与 `%v` 占位符、
   per-sink 统计
 - **路由规则**（类目选择器 × 级别范围）、5 个内置格式 + 自定义命名格式
@@ -131,7 +132,7 @@ cmake --build build && ctest --test-dir build
 -DHPULOGC_C_STANDARD=11             # C11（默认 99）
 -DHPULOGC_ATOMIC_BACKEND=gcc-atomic # 强制原子后端
 -DHPULOGC_SANITIZER=address         # address / thread / undefined / address,undefined
--DHPULOGC_SINKS=console,rollingfile,syslog,null  # 内置 sink 白名单裁剪
+-DHPULOGC_SINKS=console,rollingfile,syslog,tcp,udp,null  # 内置 sink 白名单裁剪（tcp/udp/syslog 为 POSIX 专属）
 ```
 
 > 并发模式与是否无锁均为**编译期选择**，不可运行时更改；取值非法时
@@ -190,11 +191,12 @@ powershell -ExecutionPolicy Bypass -File scripts\run_matrix.ps1
 
 每个输出实例都是一个 **sink**（vtable 抽象，`hpulogc_sink_ops_t`），
 通过 `[outputs]`（INI）或 `hpulogc_config_t.sinks[]`（代码内，能力对等）
-声明实例；内置 4 类：`console`、`rollingfile`（`file` 为别名）、
-`syslog`（POSIX 专属，进程内单实例）、`null`。未注册的类型一律
-fail-fast。每个实例可选 `async = on` 走 **per-sink 异步投递**：专属
-有界字节环队列 + 专属 worker 批量写出，队列满丢弃当前事件并计入该
-实例的 `dropped`（恒不阻塞投递方；`queue size` 支持 64KB~16MB）。
+声明实例；内置 6 类：`console`、`rollingfile`（`file` 为别名）、
+`syslog`（POSIX 专属，进程内单实例）、**`tcp` / `udp`**（网络型，v0.6.2
+新增，POSIX 专属）、`null`。未注册的类型一律 fail-fast。每个实例可选
+`async = on` 走 **per-sink 异步投递**：专属有界字节环队列 + 专属
+worker 批量写出，队列满丢弃当前事件并计入该实例的 `dropped`（恒不阻塞
+投递方；`queue size` 支持 64KB~16MB）。
 
 ```ini
 # 节顺序有规范约束：[formats] 先于 [outputs] 先于 [rules]（§10.2）
@@ -210,6 +212,30 @@ drop     = null
 [rules]
 *.*      = standard, console0, applog
 worker.* = rendered, worker
+```
+
+**网络型 sink**（`tcp` / `udp`，rd_v0.6 §4.10.8；v1 POSIX 专属，Windows
+构建不可注册；**推荐 `async = on`**，网络延迟与断线重试只影响该实例的
+专属 worker）：
+
+- `tcp`：行帧输出——每条记录渲染行追加 `\n`（兼容 syslog/rsyslog 行
+  协议接收方）。`host`/`port` 必填；start 首连失败即 init 失败
+  （fail-fast，配置错误早暴露）；运行期断线自动**指数退避重连**：
+  `reconnect backoff`（默认 1 秒，1-60）起 ×2 至 `reconnect backoff max`
+  （默认 30 秒）封顶，重连成功复位；退避窗口内事件计 `failed`，重连由
+  事件驱动，不阻塞投递方。
+- `udp`：无连接，每条记录恰好一个数据报；行长超过 `mtu`（默认 1472 =
+  以太网 1500 − IPv4 20 − UDP 8，范围 576-65507）时**截断至 mtu 后仍
+  投递**并计 `failed`（不做 IP 分片）；非阻塞 socket，`EAGAIN` 丢弃计
+  `failed`；不保证送达（UDP + per-sink 异步恒 discard 双重明示）。
+- 共同：投递语义 **at-most-once**（失败/退避窗口内事件不缓存重发）；
+  热重载变更任何私有键即断连重建；记账走 per-sink
+  written/dropped/failed（§4.10.3 恒等式闭合）。
+
+```ini
+[outputs]
+net_tcp   = tcp, host=127.0.0.1, port=514, async=on, queue size=1M, reconnect backoff=1, reconnect backoff max=30
+net_udp   = udp, host=127.0.0.1, port=514, async=on, queue size=1M, mtu=1472
 ```
 
 **结构化字段**（`HPULOGC_*_EX` 宏族，I64/U64/F64/BOOL/STR 五类值，
@@ -280,12 +306,14 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 ## 文档
 
 - 需求规格（规范性，唯一现行版）：`docs/rd_v0.6.md`（合并 v0.2 全文、
-  v0.3 MPMC 增量与多 sink 体系；历史版本 rd_v0.2/rd_v0.3 保留作快照）
+  v0.3 MPMC 增量与多 sink 体系；现行 v0.6.2 含网络型 sink §4.10.8；
+  历史版本 rd_v0.2/rd_v0.3 保留作快照）
 - 多 sink 需求与设计：`docs/mul_sink.md`
 - 用户决策记录：`docs/decision_log.md`
 - 代码结构与平台契约：`docs/code_structure.md`
 - 实现决策记录：`docs/implementation_notes.md`（含 Phase 2 Windows、
-  Phase 4 MPMC、Phase 5 多 sink 章节与 P-1..P-4 缺陷登记）
+  Phase 4 MPMC、Phase 5 多 sink、网络型 sink 第一期章节与
+  P-1..P-5/P-7 缺陷登记）
 - 性能测试报告：`docs/perf_report.md`（Phase 1 / Linux）、
   `docs/perf_report_windows.md`（Phase 2 / Windows）、
   `docs/perf_report_sinks.md`（多 sink 分发开销）
