@@ -111,6 +111,38 @@ int64_t hpu_fs_size(int fd)
     return (int64_t)st.st_size;
 }
 
+int hpu_fs_fstat_id(int fd, hpu_fs_file_id_t* out)
+{
+    struct stat st;
+
+    if (fd < 0 || out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (fstat(fd, &st) != 0) {
+        return -1;
+    }
+    out->dev = (uint64_t)st.st_dev;
+    out->ino = (uint64_t)st.st_ino;
+    return 0;
+}
+
+int hpu_fs_stat_id(const char* path, hpu_fs_file_id_t* out)
+{
+    struct stat st;
+
+    if (path == NULL || out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    out->dev = (uint64_t)st.st_dev;
+    out->ino = (uint64_t)st.st_ino;
+    return 0;
+}
+
 int hpu_fs_fchmod(int fd, unsigned mode)
 {
     return fchmod(fd, (mode_t)mode);

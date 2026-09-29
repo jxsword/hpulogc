@@ -11,6 +11,8 @@
  *    OPEN_ALWAYS followed by a seek to EOF: with FILE_GENERIC_WRITE the
  *    auto-append access mode cannot be combined with FlushFileBuffers
  *    (fsync), and the library serializes writers per output anyway.
+ *    Share mode is READ|WRITE|DELETE so external tools can rotate the
+ *    open log file (spec 4.6 external-rotation detection).
  *  - Permission bits are ignored with a one-time stderr warning (spec
  *    4.7); hpu_fs_fchmod() is a successful no-op.
  *  - hpu_fs_symlink() always fails: .latest needs privileges on Windows
@@ -136,9 +138,13 @@ int hpu_fs_open_append(const char* path, unsigned mode)
     }
 
     /* OPEN_ALWAYS: create when missing, keep existing content (matches
-     * O_CREAT|O_APPEND without O_TRUNC). */
-    h = CreateFileW(wpath, access, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL, NULL);
+     * O_CREAT|O_APPEND without O_TRUNC). Share mode allows external
+     * processes to rename/delete the open log file (logrotate-style
+     * external rotation, detected via hpu_fs_fstat_id); this mirrors
+     * POSIX open semantics. */
+    h = CreateFileW(wpath, access,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         errno = EIO;
         return -1;
@@ -277,6 +283,66 @@ int64_t hpu_fs_size(int fd)
         return -1;
     }
     return (int64_t)sz.QuadPart;
+}
+
+int hpu_fs_fstat_id(int fd, hpu_fs_file_id_t* out)
+{
+    HANDLE h;
+    BY_HANDLE_FILE_INFORMATION info;
+
+    if (fd < 0 || out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = EBADF;
+        return -1;
+    }
+    if (!GetFileInformationByHandle(h, &info)) {
+        errno = EIO;
+        return -1;
+    }
+    out->dev = (uint64_t)info.dwVolumeSerialNumber;
+    out->ino = ((uint64_t)info.nFileIndexHigh << 32) |
+               (uint64_t)info.nFileIndexLow;
+    return 0;
+}
+
+int hpu_fs_stat_id(const char* path, hpu_fs_file_id_t* out)
+{
+    wchar_t wpath[HPULOGC_MAX_PATH_LEN];
+    HANDLE h;
+    BY_HANDLE_FILE_INFORMATION info;
+
+    if (path == NULL || out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (utf8_to_utf16(path, wpath, HPULOGC_MAX_PATH_LEN) != 0) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    /* Attribute-query access only; share-all so the check never disturbs
+     * whoever owns the file. */
+    h = CreateFileW(wpath, FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = (GetLastError() == ERROR_FILE_NOT_FOUND ||
+                 GetLastError() == ERROR_PATH_NOT_FOUND) ? ENOENT : EIO;
+        return -1;
+    }
+    if (!GetFileInformationByHandle(h, &info)) {
+        (void)CloseHandle(h);
+        errno = EIO;
+        return -1;
+    }
+    (void)CloseHandle(h);
+    out->dev = (uint64_t)info.dwVolumeSerialNumber;
+    out->ino = ((uint64_t)info.nFileIndexHigh << 32) |
+               (uint64_t)info.nFileIndexLow;
+    return 0;
 }
 
 int hpu_fs_fchmod(int fd, unsigned mode)
