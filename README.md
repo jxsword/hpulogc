@@ -290,6 +290,17 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
   `docs/perf_report_windows.md`（Phase 2 / Windows）、
   `docs/perf_report_sinks.md`（多 sink 分发开销）
 
+## 配置校验 CLI
+
+```bash
+hpulogc_chk_conf [--strict|--lenient] <config.ini>
+```
+
+INI 构建自动编译（min 预设除外，§11）：校验通过退出码 0、非法 1、
+用法/IO 错误 2；dry-run 校验不创建任何日志文件。CI 用它校验
+`examples/conf_eg.ini`（`chk_conf_example` ctest）。程序内校验用
+`hpulogc_conf_validate()`（§7.3）。
+
 ## 许可证
 
 MIT（见 LICENSE）。

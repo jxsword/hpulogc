@@ -71,6 +71,8 @@ jobs:
           -DHPULOGC_BUILD_SHARED=OFF
       - name: Build
         run: cmake --build build
+      - name: Validate example config (hpulogc_chk_conf)
+        run: ./build/tools/hpulogc_chk_conf examples/conf_eg.ini
       - name: Test
         run: |
           ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log

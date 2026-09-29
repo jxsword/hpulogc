@@ -541,6 +541,12 @@ if(HPULOGC_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+# Configuration validation CLI (spec rd_v0.6 v0.6.1 §11): needs the INI
+# parser, so the min preset (INI=OFF) does not build it.
+if(HPULOGC_ENABLE_INI)
+    add_subdirectory(tools)
+endif()
+
 install(TARGETS hpulogc
     EXPORT hpulogcTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -12,6 +12,7 @@
 #include "conf_model.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,27 @@
 /** @brief Buffer size bounds (spec 7.6). */
 #define CONF_BUFFER_MIN (4U * 1024U)
 #define CONF_BUFFER_MAX (1024U * 1024U * 1024U)
+
+/* ---- Diagnostics sink (consumed by hpulogc_conf_validate) ---- */
+
+hpu_conf_diag_fn g_conf_diag_sink = NULL;
+void* g_conf_diag_user = NULL;
+
+void hpu_conf_diag(const char* fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    if (g_conf_diag_sink != NULL) {
+        g_conf_diag_sink(g_conf_diag_user, buf);
+    } else {
+        fputs(buf, stderr);
+    }
+}
 
 /**
  * @brief Compute the max single-record size used for the buffer raise.
@@ -110,7 +132,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     }
 
     if (cfg->level < HPULOGC_LEVEL_TRACE || cfg->level > HPULOGC_LEVEL_OFF) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: level out of range\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
@@ -118,7 +140,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
     if (cfg->default_format != NULL) {
         if (strlen(cfg->default_format) >= HPULOGC_MAX_NAME_LEN) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: default format name too long\n");
             return HPULOGC_ERR_INVALID_ARG;
         }
@@ -127,7 +149,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     }
 
     if (cfg->default_output_count > HPULOGC_MAX_OUTPUTS) {
-        fprintf(stderr, "hpulogc: config error: too many default outputs\n");
+        hpu_conf_diag( "hpulogc: config error: too many default outputs\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
     for (i = 0; i < cfg->default_output_count; i++) {
@@ -137,7 +159,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
         if (name == NULL || name[0] == '\0' ||
             strlen(name) >= HPULOGC_MAX_NAME_LEN) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: bad default output name\n");
             return HPULOGC_ERR_INVALID_ARG;
         }
@@ -148,7 +170,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
     /* outputs (implicit names out0..outN-1, see file header) */
     if (cfg->output_count > HPULOGC_MAX_OUTPUTS) {
-        fprintf(stderr, "hpulogc: config error: too many outputs (%d max)\n",
+        hpu_conf_diag( "hpulogc: config error: too many outputs (%d max)\n",
                 HPULOGC_MAX_OUTPUTS);
         return HPULOGC_ERR_INVALID_ARG;
     }
@@ -170,7 +192,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
             if (src->type == HPULOGC_OUT_FILE) {
                 if (src->path == NULL ||
                     strlen(src->path) >= HPULOGC_MAX_PATH_LEN) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: output path missing or "
                             "too long\n");
                     return HPULOGC_ERR_CONFIG;
@@ -180,7 +202,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 dst->pub.path = dst->path_buf;
                 if (src->rotate_naming != NULL) {
                     if (strlen(src->rotate_naming) >= HPULOGC_MAX_FMT_LEN) {
-                        fprintf(stderr,
+                        hpu_conf_diag(
                                 "hpulogc: config error: rotate naming too "
                                 "long\n");
                         return HPULOGC_ERR_CONFIG;
@@ -192,25 +214,25 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 if ((src->rotate == HPULOGC_ROTATE_SIZE ||
                      src->rotate == HPULOGC_ROTATE_BOTH) &&
                     src->max_size == 0) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: max size must be > 0\n");
                     return HPULOGC_ERR_CONFIG;
                 }
                 if (src->time_unit < HPULOGC_TU_HOUR ||
                     src->time_unit > HPULOGC_TU_MONTH) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: bad time unit\n");
                     return HPULOGC_ERR_CONFIG;
                 }
             } else if (src->type == HPULOGC_OUT_CONSOLE) {
                 if (src->stream != 0 && src->stream != 1) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: console stream must be "
                             "0/1\n");
                     return HPULOGC_ERR_CONFIG;
                 }
             } else {
-                fprintf(stderr, "hpulogc: config error: bad output type\n");
+                hpu_conf_diag( "hpulogc: config error: bad output type\n");
                 return HPULOGC_ERR_CONFIG;
             }
         }
@@ -218,7 +240,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
     /* rules */
     if (cfg->rule_count > HPULOGC_MAX_RULES) {
-        fprintf(stderr, "hpulogc: config error: too many rules (%d max)\n",
+        hpu_conf_diag( "hpulogc: config error: too many rules (%d max)\n",
                 HPULOGC_MAX_RULES);
         return HPULOGC_ERR_INVALID_ARG;
     }
@@ -236,12 +258,12 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
             if (src->min_level > src->max_level ||
                 src->min_level < HPULOGC_LEVEL_TRACE ||
                 src->max_level > HPULOGC_LEVEL_OFF) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: rule level range invalid\n");
                 return HPULOGC_ERR_CONFIG;
             }
             if (src->format == NULL) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: rule format missing\n");
                 return HPULOGC_ERR_CONFIG;
             }
@@ -256,7 +278,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                     }
                 }
                 if (!builtin) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: rule format '%s' is not "
                             "a built-in format\n",
                             src->format);
@@ -269,7 +291,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 snprintf(dst->category, sizeof(dst->category), "*");
             } else {
                 if (strlen(src->category) >= HPULOGC_MAX_NAME_LEN) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: rule category too long\n");
                     return HPULOGC_ERR_CONFIG;
                 }
@@ -280,7 +302,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
             dst->max_level = src->max_level;
 
             if (src->output_count > HPULOGC_MAX_OUTPUTS) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: too many rule outputs\n");
                 return HPULOGC_ERR_CONFIG;
             }
@@ -292,7 +314,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 int found = -1;
 
                 if (name == NULL) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: rule output name "
                             "missing\n");
                     return HPULOGC_ERR_CONFIG;
@@ -303,7 +325,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                     }
                 }
                 if (found < 0) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: config error: rule references "
                             "undefined output '%s'\n",
                             name);
@@ -326,12 +348,12 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
             if (need > c->buffer_size) {
                 c->buffer_size = need;
             }
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: warning: buffer size raised to %zu bytes\n",
                     c->buffer_size);
         }
         if (c->buffer_size > CONF_BUFFER_MAX) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: buffer size above 1GB\n");
             return HPULOGC_ERR_INVALID_ARG;
         }
@@ -343,18 +365,18 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
         c->overflow_policy = (int)cfg->overflow_policy;
         break;
     default:
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: invalid overflow policy\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
 
     /* async */
     if (cfg->batch_size < 1 || cfg->batch_size > 65535) {
-        fprintf(stderr, "hpulogc: config error: batch size out of range\n");
+        hpu_conf_diag( "hpulogc: config error: batch size out of range\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
     if (cfg->flush_interval_ms < 1 || cfg->flush_interval_ms > 60000) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: flush interval out of range\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
@@ -367,7 +389,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
         if (cfg->sink_count > HPULOGC_MAX_OUTPUTS ||
             cfg->output_count + cfg->sink_count > HPULOGC_MAX_OUTPUTS) {
-            fprintf(stderr, "hpulogc: config error: too many sinks\n");
+            hpu_conf_diag( "hpulogc: config error: too many sinks\n");
             return HPULOGC_ERR_INVALID_ARG;
         }
         grown = realloc(c->outputs, (cfg->output_count + cfg->sink_count) *
@@ -386,7 +408,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 strlen(d->name) >= HPULOGC_MAX_NAME_LEN ||
                 d->type == NULL || d->type[0] == '\0' ||
                 strlen(d->type) >= HPULOGC_MAX_NAME_LEN) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: invalid sink name/type\n");
                 return HPULOGC_ERR_INVALID_ARG;
             }
@@ -396,7 +418,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
             o->enabled = 1;
             o->async = 0;
             if (d->count > HPU_CONF_MAX_SINK_KV) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: too many sink "
                         "parameters\n");
                 return HPULOGC_ERR_INVALID_ARG;
@@ -407,7 +429,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                 for (k = 0; k < d->count; k++) {
                     if (d->keys == NULL || d->vals == NULL ||
                         d->keys[k] == NULL || d->vals[k] == NULL) {
-                        fprintf(stderr,
+                        hpu_conf_diag(
                                 "hpulogc: config error: sink key/value "
                                 "missing\n");
                         return HPULOGC_ERR_INVALID_ARG;
@@ -426,7 +448,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
                         unsigned long long sz;
 
                         if (hpu_parse_size_str(d->vals[k], &sz) != 0) {
-                            fprintf(stderr,
+                            hpu_conf_diag(
                                     "hpulogc: config error: invalid queue "
                                     "size\n");
                             return HPULOGC_ERR_INVALID_ARG;
@@ -440,7 +462,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
                         if (o->kv_pool_len + klen + vlen + 2 >
                             sizeof(o->kv_pool)) {
-                            fprintf(stderr,
+                            hpu_conf_diag(
                                     "hpulogc: config error: sink "
                                     "parameters too long\n");
                             return HPULOGC_ERR_INVALID_ARG;
@@ -466,7 +488,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     c->shutdown_timeout_ms = cfg->shutdown_timeout_ms;
     if (cfg->consumer_threads < 1 ||
         cfg->consumer_threads > HPU_MAX_CONSUMERS) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: consumer threads out of range\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
@@ -476,7 +498,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     c->escape_injection = cfg->escape_injection;
     if (cfg->max_log_length != 0) {
         if (cfg->max_log_length < 256 || cfg->max_log_length > 65536) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: max log length out of range\n");
             return HPULOGC_ERR_INVALID_ARG;
         }
@@ -484,7 +506,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     }
     if (cfg->truncation_marker != NULL) {
         if (strlen(cfg->truncation_marker) >= HPULOGC_MAX_FMT_LEN) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: truncation marker too long\n");
             return HPULOGC_ERR_INVALID_ARG;
         }
@@ -493,7 +515,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
     }
     if (cfg->crash_safety < HPULOGC_CRASH_NONE ||
         cfg->crash_safety > HPULOGC_CRASH_SHUTDOWN) {
-        fprintf(stderr, "hpulogc: config error: invalid crash safety\n");
+        hpu_conf_diag( "hpulogc: config error: invalid crash safety\n");
         return HPULOGC_ERR_INVALID_ARG;
     }
     c->crash_safety = cfg->crash_safety;
@@ -505,7 +527,7 @@ int hpu_conf_from_code(hpu_conf_t* c, const hpulogc_config_t* cfg)
 
         if (c->buffer_size < need) {
             c->buffer_size = need;
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: warning: buffer size raised to %zu bytes\n",
                     c->buffer_size);
         }
@@ -552,7 +574,7 @@ static int resolve_default_outputs(hpu_conf_t* c)
         int idx = hpu_conf_find_output(c, c->default_output_names[i]);
 
         if (idx < 0) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: default output '%s' undefined\n",
                     c->default_output_names[i]);
             return HPULOGC_ERR_CONFIG;
@@ -577,7 +599,7 @@ static int resolve_rules(hpu_conf_t* c)
 
     for (i = 0; i < c->rule_count; i++) {
         if (hpu_conf_find_format(c, c->rules[i].format_name) == NULL) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: rule references undefined "
                     "format '%s'\n",
                     c->rules[i].format_name);
@@ -587,7 +609,7 @@ static int resolve_rules(hpu_conf_t* c)
             int idx = c->rules[i].output_idx[k];
 
             if (idx < 0 || (size_t)idx >= c->output_count) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: rule references undefined "
                         "output\n");
                 return HPULOGC_ERR_CONFIG;
@@ -624,7 +646,7 @@ static int check_dup_paths(hpu_conf_t* c)
                 return HPULOGC_ERR_CONFIG;
             }
             if (strcmp(na, nb) == 0) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: config error: duplicate file output path "
                         "'%s'\n",
                         c->outputs[i].path_buf);
@@ -652,7 +674,7 @@ static int check_naming(hpu_conf_t* c)
         }
         if (strstr(naming, "{index}") == NULL &&
             strstr(naming, "{timestamp}") == NULL) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: config error: rotate naming template needs "
                     "{index} or {timestamp}\n");
             return HPULOGC_ERR_CONFIG;
@@ -673,12 +695,12 @@ static int check_consumer_threads(hpu_conf_t* c)
         return 0;
     }
 #if !HPULOGC_ENABLE_ASYNC
-    fprintf(stderr,
+    hpu_conf_diag(
             "hpulogc: config error: consumer threads > 1 requires an "
             "async build\n");
     return HPULOGC_ERR_CONFIG;
 #elif !defined(HPULOGC_CONCURRENCY_MPMC)
-    fprintf(stderr,
+    hpu_conf_diag(
             "hpulogc: config error: consumer threads > 1 requires the "
             "MPMC concurrency build\n");
     return HPULOGC_ERR_CONFIG;
@@ -701,14 +723,14 @@ static int check_overflow_policy(hpu_conf_t* c)
 #else
 #if HPULOGC_LOCKFREE
     if (c->overflow_policy == HPULOGC_OVERFLOW_WAIT) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: overflow policy 'wait' is not "
                 "available in lock-free builds\n");
         return HPULOGC_ERR_CONFIG;
     }
 #if defined(HPULOGC_CONCURRENCY_MSPC) || defined(HPULOGC_CONCURRENCY_MPMC)
     if (c->overflow_policy == HPULOGC_OVERFLOW_OVERWRITE) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: overflow policy 'overwrite' is not "
                 "available in lock-free MPSC/MPMC builds\n");
         return HPULOGC_ERR_CONFIG;
@@ -750,19 +772,19 @@ static int open_outputs(hpu_conf_t* c)
                 if (!c->strict_init) {
                     /* lenient: unknown key / bad value degrades to a
                      * disabled sink (spec 10.1 unknown-key flow) */
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: init error: invalid definition for "
                             "output '%s' ignored (lenient)\n",
                             c->outputs[i].name_buf);
                     continue;
                 }
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: init error: invalid definition for "
                         "output '%s'\n",
                         c->outputs[i].name_buf);
                 return HPULOGC_ERR_CONFIG;
             }
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: init error: cannot open output '%s' (%s)\n",
                     c->outputs[i].path_buf, strerror(errno));
             return err_out != HPULOGC_OK ? err_out : HPULOGC_ERR_IO;
@@ -771,12 +793,24 @@ static int open_outputs(hpu_conf_t* c)
     return 0;
 }
 
+static int hpu_conf_finalize_impl(hpu_conf_t* c, int dry_run);
+
 int hpu_conf_finalize(hpu_conf_t* c)
+{
+    return hpu_conf_finalize_impl(c, 0);
+}
+
+int hpu_conf_finalize_dry_run(hpu_conf_t* c)
+{
+    return hpu_conf_finalize_impl(c, 1);
+}
+
+static int hpu_conf_finalize_impl(hpu_conf_t* c, int dry_run)
 {
     int rc;
 
     if (hpu_conf_find_format(c, c->default_format) == NULL) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: default format '%s' undefined\n",
                 c->default_format);
         return HPULOGC_ERR_CONFIG;
@@ -817,14 +851,16 @@ int hpu_conf_finalize(hpu_conf_t* c)
     c->env.mono_base_us = (int64_t)(hpu_now_ns() / 1000ULL);
     c->env.pid = hpu_getpid();
 
-    rc = open_outputs(c);
-    if (rc != 0) {
-        hpu_conf_close_outputs(c);
-        return rc;
+    if (!dry_run) {
+        rc = open_outputs(c);
+        if (rc != 0) {
+            hpu_conf_close_outputs(c);
+            return rc;
+        }
     }
 
     if (c->output_count == 0 && c->default_output_count == 0) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: warning: no outputs defined and no default "
                 "outputs; logs will be discarded\n");
     }
@@ -839,7 +875,7 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
     int err_out;
 
     if (hpu_conf_find_format(fresh, fresh->default_format) == NULL) {
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: config error: default format '%s' undefined\n",
                 fresh->default_format);
         return HPULOGC_ERR_CONFIG;
@@ -941,7 +977,7 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
                                           fresh->batch_size, &err_out);
             if (fo->handle == NULL) {
                 if (err_out == HPULOGC_ERR_CONFIG) {
-                    fprintf(stderr,
+                    hpu_conf_diag(
                             "hpulogc: reload error: invalid definition for "
                             "output '%s'\n",
                             fo->name_buf);
@@ -953,7 +989,7 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
                     }
                     return HPULOGC_ERR_CONFIG;
                 }
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: reload error: cannot open output '%s' "
                         "(%s)\n",
                         fo->path_buf, strerror(errno));

@@ -59,7 +59,7 @@ typedef struct conf_parser {
  */
 static int parse_fail(conf_parser_t* ps, int line_no, const char* msg)
 {
-    fprintf(stderr, "hpulogc: %s:%d: %s\n", ps->path != NULL ? ps->path : "?",
+    hpu_conf_diag( "hpulogc: %s:%d: %s\n", ps->path != NULL ? ps->path : "?",
             line_no, msg);
     ps->err = HPULOGC_ERR_CONFIG;
     return ps->err;
@@ -224,7 +224,7 @@ static long clamp_long(conf_parser_t* ps, int line_no, long v, long lo,
     if (v < lo || v > hi) {
         long clamped = v < lo ? lo : hi;
 
-        fprintf(stderr,
+        hpu_conf_diag(
                 "hpulogc: %s:%d: value of '%s' out of range (%ld), clamped "
                 "to %ld\n",
                 ps->path ? ps->path : "?", line_no, key, v, clamped);
@@ -358,7 +358,7 @@ unknown:
     if (ps->strict) {
         return parse_fail(ps, line_no, "unknown key in [global]");
     }
-    fprintf(stderr, "hpulogc: %s:%d: unknown key '%s' ignored\n",
+    hpu_conf_diag( "hpulogc: %s:%d: unknown key '%s' ignored\n",
             ps->path ? ps->path : "?", line_no, key);
     (void)bval;
     return 0;
@@ -521,13 +521,13 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
                 return parse_fail(ps, line_no, "invalid size");
             }
             if (sz < 64U * 1024U) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: %s:%d: queue size below 64KB, clamped\n",
                         ps->path ? ps->path : "?", line_no);
                 sz = 64U * 1024U;
             }
             if (sz > 16U * 1024U * 1024U) {
-                fprintf(stderr,
+                hpu_conf_diag(
                         "hpulogc: %s:%d: queue size above 16MB, clamped\n",
                         ps->path ? ps->path : "?", line_no);
                 sz = 16U * 1024U * 1024U;
@@ -639,7 +639,7 @@ static int parse_outputs(conf_parser_t* ps, const char* key, char* value,
                 return parse_fail(ps, line_no,
                                   "unknown output parameter");
             }
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: %s:%d: unknown output parameter '%s' ignored\n",
                     ps->path ? ps->path : "?", line_no, k);
         }
@@ -674,13 +674,13 @@ static int parse_buffer(conf_parser_t* ps, const char* key, char* value,
             return parse_fail(ps, line_no, "invalid size");
         }
         if (sz < 4096) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: %s:%d: buffer size below 4KB, clamped\n",
                     ps->path ? ps->path : "?", line_no);
             sz = 4096;
         }
         if (sz > 1073741824ULL) {
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: %s:%d: buffer size above 1GB, clamped\n",
                     ps->path ? ps->path : "?", line_no);
             sz = 1073741824ULL;
@@ -705,7 +705,7 @@ unknown:
     if (ps->strict) {
         return parse_fail(ps, line_no, "unknown key in [buffer]");
     }
-    fprintf(stderr, "hpulogc: %s:%d: unknown key '%s' ignored\n",
+    hpu_conf_diag( "hpulogc: %s:%d: unknown key '%s' ignored\n",
             ps->path ? ps->path : "?", line_no, key);
     return 0;
 }
@@ -743,7 +743,7 @@ unknown:
     if (ps->strict) {
         return parse_fail(ps, line_no, "unknown key in [async]");
     }
-    fprintf(stderr, "hpulogc: %s:%d: unknown key '%s' ignored\n",
+    hpu_conf_diag( "hpulogc: %s:%d: unknown key '%s' ignored\n",
             ps->path ? ps->path : "?", line_no, key);
     return 0;
 }
@@ -770,7 +770,7 @@ static int parse_throttle(conf_parser_t* ps, const char* key, char* value,
         if (d < 0.0 || d > 1.0) {
             double clamped = d < 0.0 ? 0.0 : 1.0;
 
-            fprintf(stderr,
+            hpu_conf_diag(
                     "hpulogc: %s:%d: sampling rate out of range, clamped\n",
                     ps->path ? ps->path : "?", line_no);
             d = clamped;
@@ -798,7 +798,7 @@ unknown:
     if (ps->strict) {
         return parse_fail(ps, line_no, "unknown key in [throttle]");
     }
-    fprintf(stderr, "hpulogc: %s:%d: unknown key '%s' ignored\n",
+    hpu_conf_diag( "hpulogc: %s:%d: unknown key '%s' ignored\n",
             ps->path ? ps->path : "?", line_no, key);
     return 0;
 }
@@ -1008,7 +1008,7 @@ unknown:
     if (ps->strict) {
         return parse_fail(ps, line_no, "unknown key in [advanced]");
     }
-    fprintf(stderr, "hpulogc: %s:%d: unknown key '%s' ignored\n",
+    hpu_conf_diag( "hpulogc: %s:%d: unknown key '%s' ignored\n",
             ps->path ? ps->path : "?", line_no, key);
     return 0;
 }
@@ -1084,7 +1084,7 @@ static int parse_build(conf_parser_t* ps, const char* key, char* value,
     return 0;
 
 mismatch:
-    fprintf(stderr,
+    hpu_conf_diag(
             "hpulogc: %s:%d: [build] '%s' does not match the actual build; "
             "ignored\n",
             ps->path ? ps->path : "?", line_no, key);
@@ -1295,10 +1295,10 @@ int hpu_conf_load_file(hpu_conf_t* c, const char* path, int strict)
     }
     if (rc != 0) {
         if (rc == HPULOGC_ERR_CONFIG && err_line > 0) {
-            fprintf(stderr, "hpulogc: %s:%d: configuration parse error\n",
+            hpu_conf_diag( "hpulogc: %s:%d: configuration parse error\n",
                     path, err_line);
         } else if (rc == HPULOGC_ERR_CONFIG) {
-            fprintf(stderr, "hpulogc: %s: cannot read configuration file\n",
+            hpu_conf_diag( "hpulogc: %s: cannot read configuration file\n",
                     path);
         }
         return HPULOGC_ERR_CONFIG;
