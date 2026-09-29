@@ -1,0 +1,90 @@
+# ============================================================================
+# hpulogc bench (manual dispatch)
+#
+# Collects the sink-dispatch / pipeline overhead numbers on the platforms
+# perf_report_sinks.md leaves uncovered (Windows/macOS). Not a gate: this
+# workflow only fires on workflow_dispatch, builds the EXCLUDE_FROM_ALL
+# bench targets and uploads the raw output as an artifact; results are
+# transcribed into docs/perf_report_sinks.md with runner specs and the
+# ±10% noise caveat from the established methodology.
+#
+# MSVC steps go through scripts/msvc_ci.bat (same wrapper as win_msvc.yml).
+# ============================================================================
+
+name: Bench (dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Throughput-mode seconds per scenario'
+        default: '3'
+
+jobs:
+  bench:
+    name: bench ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, name: windows-msvc }
+          - { os: macos-latest, name: macos }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Runner specs (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
+
+      - name: Runner specs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sysctl -n machdep.cpu.brand_string
+          echo "ncpu: $(sysctl -n hw.ncpu)"
+
+      - name: Configure (MSVC)
+        if: runner.os == 'Windows'
+        run: |
+          cmd /c "scripts\msvc_ci.bat cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DHPULOGC_BUILD_SHARED=OFF -DHPULOGC_BUILD_EXAMPLES=OFF"
+          exit $LASTEXITCODE
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHPULOGC_BUILD_SHARED=OFF -DHPULOGC_BUILD_EXAMPLES=OFF
+
+      - name: Build bench targets
+        run: |
+          cmake --build build --target bench_log bench_sink bench_memory
+          exit $LASTEXITCODE
+
+      - name: Run bench (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          build\tests\bench_sink.exe >> bench_output.txt
+          build\tests\bench_sink.exe throughput ${{ github.event.inputs.seconds }} >> bench_output.txt
+          build\tests\bench_log.exe >> bench_output.txt
+          build\tests\bench_log.exe throughput ${{ github.event.inputs.seconds }} >> bench_output.txt
+          build\tests\bench_memory.exe >> bench_output.txt
+          type bench_output.txt
+
+      - name: Run bench (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ./build/tests/bench_sink >> bench_output.txt
+          ./build/tests/bench_sink throughput ${{ github.event.inputs.seconds }} >> bench_output.txt
+          ./build/tests/bench_log >> bench_output.txt
+          ./build/tests/bench_log throughput ${{ github.event.inputs.seconds }} >> bench_output.txt
+          ./build/tests/bench_memory >> bench_output.txt
+          cat bench_output.txt
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.name }}
+          path: |
+            bench_output.txt
