@@ -55,18 +55,15 @@ jobs:
           $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows-static-md'
           & "$env:VCPKG_ROOT\vcpkg.exe" install
           exit $LASTEXITCODE
-      - name: Configure consumer (find_package via vcpkg toolchain)
+      - name: Configure consumer (find_package via vcpkg toolchain, MSVC)
         run: |
           $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
-          $env:VCPKG_DEFAULT_TRIPLET = 'x64-windows-static-md'
-          cmake -S scripts/vcpkg_smoke -B build-smoke -G Ninja `
-            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
-            -DVCPKG_MANIFEST_DIR=${{ github.workspace }}
+          cmd /c "scripts\msvc_ci.bat cmake -S scripts/vcpkg_smoke -B build-smoke -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DVCPKG_MANIFEST_DIR=%CD%"
           exit $LASTEXITCODE
-      - name: Build and run consumer
+      - name: Build and run consumer (MSVC)
         run: |
-          cmake --build build-smoke
+          $env:VCPKG_ROOT = "$PWD\vcpkg-tool"
+          cmd /c "scripts\msvc_ci.bat cmake --build build-smoke"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-smoke --output-on-failure
+          cmd /c "scripts\msvc_ci.bat ctest --test-dir build-smoke --output-on-failure"
           exit $LASTEXITCODE
