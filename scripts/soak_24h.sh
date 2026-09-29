@@ -105,7 +105,15 @@ for variant in "${VARIANTS[@]}"; do
     console_cap="$bdir/console_capture.log"
     : > "$console_cap"
     echo "[soak] launching $variant driver for ${DURATION}s ..."
-    nohup "$bdir/tools/soak_driver" --config "$cfg" --duration "$DURATION" \
+    # TSan crashes with "unexpected memory mapping" on kernels with high
+    # mmap_rnd_bits (Ubuntu 24.04); setarch -R disables ASLR for the
+    # child (unprivileged) which restores TSan compatibility.
+    setarch_prefix=""
+    if [ "$variant" = "tsan" ]; then
+        setarch_prefix="setarch $(uname -m) -R"
+    fi
+    # shellcheck disable=SC2086
+    nohup $setarch_prefix "$bdir/tools/soak_driver" --config "$cfg" --duration "$DURATION" \
         --producers "$PRODUCERS" --rate-us "$RATE_US" \
         > "$bdir/driver.stdout.log" 2> "$console_cap" &
     pid=$!
