@@ -383,3 +383,15 @@
 - 影响：云上 TSan 变体须 `setarch $(uname -m) -R` 前缀（内核 6.8 高
   mmap_rnd_bits，环境不允许改 sysctl，同 soak 脚本 PR #18）；取数与
   三口径报告见 `docs/perf_report_soak.md`（待双轨完成后编制）。
+
+## D-R8 v0.6.4 落地自由度定案：`%g` 缓存槽策略与修饰符支持范围（2026-09-29，工单「#6 `!LEVEL` 取反匹配 + #7 占位符扩展」）
+
+- 背景：rd_v0.6 v0.6.4 规范先行完成后，任务书将两项实现层选择授权为自由度（"自定后登记"）：① `%g` 的时间缓存策略（独立槽或与 `%time` 共享槽位图）；② 占位符修饰符的支持范围钉死方式（规范要求"未列明的不支持"）。约束：稳态零 malloc（§9）不变、`%time` 与 `%g` 允许在同一模板并存、append-only ABI。
+- 选项：
+  - A. 缓存独立双槽（slot[0]=local、slot[1]=UTC，动作按 use_utc 选槽）——优点：改动最小，并存天然正确，缓存收益完整，稳态零 malloc 保持 / 缺点：每线程常驻内存约增 1KB / 代价：TLS 渲染存储的时间缓存部分翻倍
+  - B. 缓存与 `%time` 共享单槽 + 位图区分——优点：内存不变 / 缺点：同格式并存时每条日志必有一个占位符退化为整 strftime 重渲染，按秒缓存收益减半；位图淘汰逻辑复杂 / 代价：热路径新增分支与比较，与 A.1 #1"每占位符独立缓存槽"的决策精神相悖
+  - C. 修饰符范围 = 全部 10 个值占位符（level/time/g/pid/tid/file/line/func/msg/category），`%n`/`%%`/`%v` 不支持——优点：规则为一张封闭清单，可预测性最强 / 缺点：数值占位符对齐是低频场景 / 代价：无
+  - D. 修饰符范围 = 仅字符串型占位符（level/time/g/file/func/msg/category）——优点：更贴近 printf 数值格式化惯例 / 缺点：需在规范中解释 pid/tid/line 为何被排除，清单出现人为例外 / 代价：可预测性下降、规范面变大
+- 结论：缓存选 A；修饰符范围选 C。
+- 理由：A 的常驻代价是每线程约 1KB 量级（相对 per-thread 渲染缓冲已存在的量级可忽略），换取缓存语义简单且与 A.1 #1 一致；B 无任何规范收益。C 与 D 的取舍在于规范可预测性——"封闭全清单 + 未列明不支持"是本文一贯基线（A.1 #7 同款），D 引入例外使规范面更大而收益存疑。
+- 影响：src/format/format.h（`HPU_FMT_CACHE_SLOTS`、`hpu_fmt_action_t` 修饰符字段）、src/format/format.c（`render_time` 选槽、`parse_modifier`/`modifier_finish`）、src/core/pipeline.c（TLS 存储类型不变）、docs/rd_v0.6.md §10.3/§12（v0.6.4）、tests/unit/test_format.c、tests/unit/test_ini.c、tests/unit/test_conf_validate.c、tests/integration/test_pipeline.c；实现层明细见 implementation_notes「`!LEVEL` 取反匹配与占位符扩展（rd_v0.6 v0.6.4）实现自由度登记」（F-1..F-7）。
