@@ -13,7 +13,9 @@
   v0.6.2 新增、POSIX 专属）、per-sink 异步队列 + 专属
   worker 批量写出、结构化字段（typed key=value）与 `%v` 占位符、
   per-sink 统计
-- **路由规则**（类目选择器 × 级别范围）、5 个内置格式 + 自定义命名格式
+- **路由规则**（类目选择器 × 级别范围，v0.6.4 起支持取反
+  `!LEVEL`——匹配除该精确级别外的所有级别）、5 个内置格式 + 自定义
+  命名格式（`%g` UTC 时间占位符与 printf 风格宽度/精度修饰符，v0.6.4）
 - **轮转**（size/time/both、{base}/{timestamp}/{index} 模板、max files、.latest）
 - **安全**：async-signal-safe 受限通道、fork 惰性重建、errno 保持、注入转义
 - 编译期裁剪体系（`HPULOGC_ENABLE_*`）、原子后端可插拔、四版本预设
@@ -306,9 +308,9 @@ target_link_libraries(myapp PRIVATE hpulogc::hpulogc)
 ## 文档
 
 - 需求规格（规范性，唯一现行版）：`docs/rd_v0.6.md`（合并 v0.2 全文、
-  v0.3 MPMC 增量与多 sink 体系；现行 v0.6.3 含网络型 sink §4.10.8 与
-  错误描述 API `hpulogc_strerror` §7.3；历史版本 rd_v0.2/rd_v0.3 保留
-  作快照）
+  v0.3 MPMC 增量与多 sink 体系；现行 v0.6.4 含网络型 sink §4.10.8、
+  错误描述 API `hpulogc_strerror` §7.3、规则取反匹配 `!LEVEL` §10.3
+  与 `%g`/宽度精度修饰符 §12；历史版本 rd_v0.2/rd_v0.3 保留作快照）
 - 多 sink 需求与设计：`docs/mul_sink.md`
 - 用户决策记录：`docs/decision_log.md`
 - 代码结构与平台契约：`docs/code_structure.md`
