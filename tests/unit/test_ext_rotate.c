@@ -112,15 +112,24 @@ static long read_file_lines(const char* path, char* buf, size_t bufsz)
 }
 
 /**
- * @brief Check that a rendered log line with @p marker exists (the message
- *        is the last field, so the marker is followed by the newline).
+ * @brief Check that a rendered log line with @p marker exists. The message
+ *        is the last field; the line terminator is "\n" on POSIX and
+ *        "\r\n" on Windows (format.c), so the boundary check accepts both.
  */
 static int contains_log_line(const char* buf, const char* marker)
 {
-    char pat[64];
+    size_t mlen = strlen(marker);
+    const char* p = buf;
 
-    snprintf(pat, sizeof(pat), "%s\n", marker);
-    return strstr(buf, pat) != NULL;
+    while ((p = strstr(p, marker)) != NULL) {
+        char c = p[mlen];
+
+        if (c == '\n' || c == '\r') {
+            return 1;
+        }
+        p++;
+    }
+    return 0;
 }
 
 TEST(ext_no_false_positive_within_window)
@@ -230,13 +239,13 @@ TEST(ext_no_line_lands_in_both_files)
     for (i = 0; i < 1105; i++) {
         char marker[32];
 
-        snprintf(marker, sizeof(marker), "line %ld\n", i);
+        snprintf(marker, sizeof(marker), "line %ld", i);
         if (i < 1023) {
-            CHECK(strstr(old_buf, marker) != NULL);
-            CHECK(strstr(new_buf, marker) == NULL);
+            CHECK(contains_log_line(old_buf, marker));
+            CHECK(!contains_log_line(new_buf, marker));
         } else {
-            CHECK(strstr(new_buf, marker) != NULL);
-            CHECK(strstr(old_buf, marker) == NULL);
+            CHECK(contains_log_line(new_buf, marker));
+            CHECK(!contains_log_line(old_buf, marker));
         }
     }
 
