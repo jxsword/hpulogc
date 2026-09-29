@@ -245,3 +245,24 @@
   `hpu_watcher.h`（append-only 追加 use_kqueue/vnode_dead 字段）、
   `posix_watcher_poll.{h,c}`（快照函数共享为 hpu_poll_snapshot）、
   CMakeLists darwin 源替换；macOS CI 全矩阵实测。
+
+## D-R3 配置字段清单文件 conf_eg.ini 的存储位置（2026-09-29，文档工单）
+- 背景：审查确认配置字段完整说明仅存在于 rd_v0.6 §10.3（嵌于 1300+ 行
+  规格内），README 只覆盖常用子集，src/ 无面向用户说明；需要一份独立、
+  可直接复制编辑的配置清单文件。
+- 选项：
+  - A. 仓库根目录 conf_eg.ini——发现性最强（zlog 惯例）/ 根目录混入
+    非代码文件 / 代价低
+  - B. examples/conf_eg.ini（选中）——与示例程序同目录，用户寻找示例
+    的自然位置；根目录整洁 / 发现性略低于根目录 / 代价低
+  - C. docs/conf_eg.ini——紧贴规范 / docs 为规格 markdown 目录，示例
+    文件易淹没 / 代价低
+  - D. 根目录 + docs 双份——两处可发现 / 双份内容必然漂移 / 代价高
+- 结论：B，配套 README 文档索引与 rd_v0.6 §10.3 顶部指引（§10.3 为
+  唯一规范源，副本随其同步）。
+- 理由：B 在发现性与仓库整洁间平衡最佳；双份（D）漂移风险最高。
+- 影响：`examples/conf_eg.ini`（新，全 9 节 60 键 + enabled 通用键
+  示例，strict init + ASan/UBSan 实测可运行）；编制过程中实证修正
+  rd_v0.6 §10.3 [formats] 模板缺陷（照抄内置五格式名会 duplicate
+  启动失败）与 README 多 sink 示例的分号注释错误（`;` 非注释符）；
+  登记 P-5（enabled=false 措辞 vs 实现语义）。

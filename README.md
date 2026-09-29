@@ -199,7 +199,7 @@ fail-fast。每个实例可选 `async = on` 走 **per-sink 异步投递**：专�
 ```ini
 # 节顺序有规范约束：[formats] 先于 [outputs] 先于 [rules]（§10.2）
 [formats]
-rendered = "%time [%level] %msg %v%n"   ; %v 渲染结构化字段 k=v 列表
+rendered = "%time [%level] %msg %v%n"   # %v 渲染结构化字段 k=v 列表
 
 [outputs]
 console0 = console, stream=stdout

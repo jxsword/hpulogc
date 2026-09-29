@@ -1042,6 +1042,8 @@ typedef struct {
 
 ### 10.3 完整配置模板
 
+> 本节为唯一规范源；可运行的实例副本见 `examples/conf_eg.ini`（随本节同步）。
+
 ```ini
 # ============================================================================
 # hpulogc 日志配置文件
@@ -1132,17 +1134,18 @@ signal reload = false
 # ============================================================================
 # [formats] 日志格式模板
 # ============================================================================
+# 内置五个格式名（minimal / standard / categorized / detailed / json）已
+# 预注册且模板如下，直接在 [rules] 中引用即可；此处重定义同名格式属重复
+# 定义，strict init 下启动失败（§10.4）。自定义命名格式示例（%v 渲染
+# 结构化字段 k=v 列表；内置格式中仅 json 自动追加 fields 成员）：
+#
+#   rendered = "%time [%level] %msg %v%n"
+#
 # 模板值为 = 后整行，建议用双引号包裹。
 # 可用占位符：%level %time %pid %tid %file %line %func %msg %category %n %%
 #             %v（结构化字段 k=v 列表，§4.11.5；json 格式自动追加 fields 成员）
 # ============================================================================
 [formats]
-
-minimal     = "%level: %msg%n"
-standard    = "%time [%level] %msg%n"
-categorized = "%time [%level] [%category] %msg%n"
-detailed    = "%time [%level] [pid:%pid tid:%tid] [%file:%line %func] [%category] %msg%n"
-json        = "{\"time\":\"%time\",\"level\":\"%level\",\"category\":\"%category\",\"pid\":%pid,\"tid\":%tid,\"file\":\"%file\",\"line\":%line,\"msg\":\"%msg\"}%n"
 
 
 # ============================================================================
