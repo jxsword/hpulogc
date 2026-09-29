@@ -605,3 +605,16 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | 编号 | 位置 | 描述/现象 | 修复/处理 |
 |------|------|-----------|-----------|
 | P-7 | `src/output/sink_queue.c` worker sweep（**已修**，本 PR） | 第二级队列 worker 的整段 sweep `memcpy` 假设可用区间在环上连续；当 worker 阻塞于慢 `emit_batch`（网络 sink 发送阻塞是常态，async=on 场景）期间生产者推进并回绕环时，`head%cap + avail > cap` 的 sweep **越界读**（macOS ASan 捕获：64KB 队列环末尾越界读 2484 字节）。同路径第二处：生产者回绕桥接 pad（4 字节零 rec_len）落在 sweep 中部时，`sq_decode` 返回 0 使 worker **静默丢弃其后全部已出队记录**（无记账） | sweep 按 `q->cap - head%cap` 边界拆两段拷贝（线性化保序）；decode 循环将 rec_len==0 识别为 4 字节 pad 跳过，仅真损坏记录才终止 sweep。由 test_net_sinks 的 async 队列满用例（64KB 队列 + 阻塞接收端）稳定暴露 |
+
+# emit_batch 收尾与错误描述 API（rd_v0.6 v0.6.3）实现自由度登记
+
+> 任务书授权"实现自由度自定后登记"。S-1 与缓冲区语义的用户级决策部分
+> 已单独记入 decision_log D-R7；以下为纯实现层选择。
+
+| # | 自由度 | 决定 | 理由与代价 |
+|---|--------|------|-----------|
+| S-1 | strerror 截断可见性 | 返回完整所需长度（snprintf 语义），截断由 `ret >= len` 判定；`buf=NULL, len=0` 为纯长度查询 | 一次调用可探测长度；与 §7.4 "不依赖 errno" 一致（D-R7 全矩阵见 decision_log） |
+| S-2 | syslog 保持 `emit_batch = NULL` | 不实现批量路径 | 双重理由：① syslog(3) 无批量接口，每次调用内部自带锁与格式化，合并无 API 可落；② 该类型本就是 SYNC-only（无 HPULOGC_CAP_ASYNC），第二级队列与 emit_batch 路径对它不可达。代价：无（异步路径不存在） |
+| S-3 | console 批量错误记账口径 | 批内任一 fwrite 失败 → 整批计 failed（返回 0） | stdio 不报告单次 fwrite 内的部分进度，逐事件记账需放弃合并（回退逐条 emit）；控制台写失败（EPIPE 等）罕见且 ferror 粘滞，整批口径可接受。对比：TCP 采用逐行口径（N-4），因其部分写是常态 |
+| S-4 | console 合并缓冲容量 | priv 内联 64KB（预分配，create 时 calloc） | 与 TCP 合并缓冲同规格（N-3）；超长行（> 64KB，max_log_length 上限 65536 时可发生）走"先清缓冲、直写该行"的旁路，行永不跨边界拆分（LINE_ATOMIC 契约）。代价：console 实例常驻多 64KB |
+| S-5 | null emit_batch 返回口径 | 直接返回 `(int)n` | n 受 batch_max 上界约束（≤ 数千），int 溢出不可能；零成本批量化使 async null 基线反映纯分发开销 |
