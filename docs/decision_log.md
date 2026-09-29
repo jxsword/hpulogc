@@ -372,3 +372,14 @@
 - 影响：rd_v0.6 §7.3 条目（v0.6.3）；include/hpulogc.h 声明；
   src/core/api.c 实现；tests/unit/test_api.c 覆盖（全错误码/截断/
   长度查询/非法参数/未知码）；后续 hpulogc_chk_conf 诊断输出可复用。
+
+### D-R6 注记（2026-09-29 追加：正式门禁执行环境变更，不覆盖原条目）
+
+- 背景：原定案（选项 B）为本地 WSL 后台 24h。实际执行中发现宿主机存在
+  中途关机风险，24h 门禁不可承受中断；用户决策改用云服务器。
+- 变更：正式门禁迁移至云服务器 juzdata（Ubuntu 24.04，2核4G，内核 6.8，
+  仓库 ~/hpulogc-soak，基线 4c687cd）；**WSL 双轨保留**作对照口径
+  （原定案的负载形态、判据、产出物全部不变）。
+- 影响：云上 TSan 变体须 `setarch $(uname -m) -R` 前缀（内核 6.8 高
+  mmap_rnd_bits，环境不允许改 sysctl，同 soak 脚本 PR #18）；取数与
+  三口径报告见 `docs/perf_report_soak.md`（待双轨完成后编制）。
