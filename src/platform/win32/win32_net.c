@@ -180,6 +180,23 @@ int hpu_net_send_dgram(int fd, const void* buf, size_t len,
     return 0;
 }
 
+int hpu_net_unix_stream_open(const char* path)
+{
+    /* Unix domain sockets are POSIX-only in v1 (rd_v0.6 §4.10.9); the
+     * unix/fifo sinks are excluded from Windows builds, so this stub is
+     * never called in shipped configurations. */
+    (void)path;
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+int hpu_net_unix_dgram_open(const char* path)
+{
+    (void)path;
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
 void hpu_net_close(int fd)
 {
     if (fd >= 0) {

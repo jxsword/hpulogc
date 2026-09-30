@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #if defined(SO_NOSIGPIPE)
@@ -144,4 +145,84 @@ void hpu_net_close(int fd)
     if (fd >= 0) {
         close(fd);
     }
+}
+
+int hpu_net_unix_stream_open(const char* path)
+{
+    struct sockaddr_un sa;
+    size_t len;
+    int fd;
+
+    len = strlen(path);
+    if (len == 0 || len >= sizeof(sa.sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+#if defined(HPU_NET_HAVE_SO_NOSIGPIPE)
+    {
+        /* Same SIGPIPE suppression as the TCP path (macOS/BSD). */
+        int on = 1;
+
+        (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+    }
+#endif
+    sa.sun_family = AF_UNIX;
+    memcpy(sa.sun_path, path, len + 1);
+    if (connect(fd, (const struct sockaddr*)&sa, sizeof(sa)) != 0) {
+        int saved = errno;
+
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
+int hpu_net_unix_dgram_open(const char* path)
+{
+    struct sockaddr_un sa;
+    size_t len;
+    int fd;
+    int flags;
+
+    len = strlen(path);
+    if (len == 0 || len >= sizeof(sa.sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    /* Non-blocking: hpu_net_send() must surface EAGAIN when the peer's
+     * receive queue is full instead of blocking the emit callback. */
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        int saved = errno;
+
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+#if defined(HPU_NET_HAVE_SO_NOSIGPIPE)
+    {
+        int on = 1;
+
+        (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+    }
+#endif
+    sa.sun_family = AF_UNIX;
+    memcpy(sa.sun_path, path, len + 1);
+    if (connect(fd, (const struct sockaddr*)&sa, sizeof(sa)) != 0) {
+        int saved = errno;
+
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
 }

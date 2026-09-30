@@ -137,6 +137,10 @@ if(NOT WIN32 AND HPULOGC_ENABLE_INI)
     # self-send tests. Internally noop-gated per HPULOGC_SINK_TCP/UDP
     # so trimmed HPULOGC_SINKS builds still pass.
     hpu_add_test_binary(test_net_sinks SRCS integration/test_net_sinks.c)
+    # IPC sinks (rd_v0.6 §4.10.9): POSIX-only, endpoint files created
+    # by the test itself. Internally noop-gated per
+    # HPULOGC_SINK_UNIX/HPULOGC_SINK_FIFO like above.
+    hpu_add_test_binary(test_ipc_sinks SRCS integration/test_ipc_sinks.c)
 endif()
 hpu_add_test_binary(test_sink_async SRCS integration/test_sink_async.c)
 hpu_add_test_binary(test_signal_safe SRCS integration/test_signal_safe.c)

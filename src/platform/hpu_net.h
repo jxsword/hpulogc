@@ -107,6 +107,37 @@ int hpu_net_send_dgram(int fd, const void* buf, size_t len,
                        const void* addr, size_t addrlen);
 
 /**
+ * @brief Open a stream socket and connect it to a Unix domain socket file.
+ *
+ * The endpoint file must already exist (bound by the peer process); this
+ * call never creates, binds or unlinks endpoint files (rd_v0.6 §4.10.9).
+ * The descriptor is guaranteed not to raise SIGPIPE on subsequent
+ * hpu_net_send() calls.
+ *
+ * @param path  Filesystem path of the peer's bound socket.
+ * @return      Descriptor on success, -1 on failure (errno set;
+ *              ENAMETOOLONG when path exceeds the platform sun_path
+ *              limit; ENOENT/ECONNREFUSED when the peer is absent or
+ *              not accepting).
+ */
+int hpu_net_unix_stream_open(const char* path);
+
+/**
+ * @brief Open a connected datagram socket to a Unix domain socket file.
+ *
+ * Connected (not sendto-based) so that a restarted peer surfaces
+ * ECONNREFUSED on send, keeping the disconnect detection identical to
+ * the TCP sink. The descriptor is non-blocking so hpu_net_send()
+ * surfaces EAGAIN when the peer's receive queue is full, and never
+ * raises SIGPIPE. Same endpoint-file rules as hpu_net_unix_stream_open().
+ *
+ * @param path  Filesystem path of the peer's bound socket.
+ * @return      Descriptor on success, -1 on failure (errno set as for
+ *              hpu_net_unix_stream_open()).
+ */
+int hpu_net_unix_dgram_open(const char* path);
+
+/**
  * @brief Close a socket descriptor. -1 is a no-op.
  * @param fd  Socket descriptor.
  */
