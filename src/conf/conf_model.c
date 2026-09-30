@@ -876,6 +876,34 @@ static int hpu_conf_finalize_impl(hpu_conf_t* c, int dry_run)
     return 0;
 }
 
+/**
+ * @brief Sink-parameter equality for the fd-reuse plan: identical key
+ *        count and identical key/value strings (generic-shape kv pool).
+ *
+ * Parameter changes (e.g. `filter keys`, §4.7.3) must rebuild the
+ * instance instead of reusing the fd: the reuse path moves the file
+ * handle and re-applies the pub fields, never the kv list.
+ * @return Non-zero when the two outputs' sink parameters match.
+ */
+static int conf_kv_equal(const hpu_conf_output_t* a,
+                         const hpu_conf_output_t* b)
+{
+    size_t i;
+
+    if (a->kv_count != b->kv_count) {
+        return 0;
+    }
+    for (i = 0; i < a->kv_count; i++) {
+        if (strcmp(a->kv_pool + a->kv_key_off[i],
+                   b->kv_pool + b->kv_key_off[i]) != 0 ||
+            strcmp(a->kv_pool + a->kv_val_off[i],
+                   b->kv_pool + b->kv_val_off[i]) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
                               int reuse_old_idx[HPULOGC_MAX_OUTPUTS])
 {
@@ -954,7 +982,8 @@ int hpu_conf_finalize_reload(hpu_conf_t* fresh, hpu_conf_t* old,
                  (oo->pub.rotate_naming != NULL &&
                   fo->pub.rotate_naming != NULL &&
                   strcmp(oo->pub.rotate_naming, fo->pub.rotate_naming) ==
-                      0))) {
+                      0)) &&
+                conf_kv_equal(oo, fo)) {
                 found = (int)j;
                 break;
             }

@@ -25,6 +25,7 @@
 
 #include "../platform/platform.h"
 #include "../core/core_internal.h" /* hpu_core_sleep_ms (bounded drain) */
+#include "output.h" /* hpu_output_base_t / hpu_output_filter_apply (§4.7.3) */
 
 /** @brief Packed record header size (u32 + 4 + 16 + 8 + 16 + 8). */
 #define SQ_HDR 56U
@@ -170,6 +171,9 @@ typedef struct sq_worker_ctx {
     size_t batch_max;      /*!< Event capacity of the arrays */
     size_t flush_interval; /*!< Worker flush cadence in ms */
     uint64_t last_flush_ms;
+    uint8_t* wire;         /*!< Filter wire scratch (§4.7.3; single-owner:
+                                the worker is per-instance single-thread) */
+    size_t wire_cap;       /*!< Filter wire scratch capacity */
 } sq_worker_ctx_t;
 
 /**
@@ -306,6 +310,29 @@ static void sq_worker_main(void* arg)
                                     &ctx->flds[n * HPULOGC_MAX_FIELDS]);
                 if (rec_len == 0) {
                     break; /* incomplete/corrupt tail: stop this sweep */
+                }
+                /* Per-sink field filtering (§4.7.3, D-R14): applied here,
+                 * after the worker's private decode and before emit —
+                 * producers pack the shared staging untouched. */
+                {
+                    hpu_output_base_t* base =
+                        (hpu_output_base_t*)(void*)ctx->sink;
+
+                    if (base->filter_count > 0 &&
+                        ctx->evs[n].field_count > 0 &&
+                        ctx->evs[n].fields_wire != NULL) {
+                        size_t removed = hpu_output_filter_apply(
+                                base, &ctx->evs[n],
+                                &ctx->flds[n * HPULOGC_MAX_FIELDS],
+                                HPULOGC_MAX_FIELDS, &ctx->wire,
+                                &ctx->wire_cap);
+
+                        if (removed > 0) {
+                            hpu_at_fetch_add_u64(&base->st_fields,
+                                                 (uint64_t)removed,
+                                                 HPU_MO_RELAXED);
+                        }
+                    }
                 }
                 ctx->batch[n] = &ctx->evs[n];
                 n++;
@@ -449,6 +476,7 @@ void hpu_sink_queue_destroy(hpu_sink_queue_t* q)
     free(q->ctx->batch);
     free(q->ctx->evs);
     free(q->ctx->flds);
+    free(q->ctx->wire);
     free(q->ctx);
     free(q);
 }

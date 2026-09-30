@@ -16,6 +16,7 @@
 
 #include "hpulogc.h"
 #include "../atomic/hpulogc_atomic.h"
+#include "../platform/platform.h"
 
 /* File-scope forward declaration: the config definition struct lives in
  * conf_model.h; without this, the tag in a parameter list would get
@@ -69,7 +70,21 @@ typedef struct hpu_output_base {
     hpu_atomic_u64 st_written;       /*!< Delivered records */
     hpu_atomic_u64 st_dropped;       /*!< Queue-full drops */
     hpu_atomic_u64 st_failed;        /*!< Write failures (after retry) */
+    hpu_atomic_u64 st_fields;        /*!< Fields removed by the filter whitelist */
     hpu_atomic_u64 st_bytes;         /*!< Delivered line bytes */
+    /* `filter keys` whitelist (§4.7.3, D-R14): parsed at create time;
+     * filter_count == 0 means no filtering (zero-cost pass-through). */
+    char* filter_pool;               /*!< Concatenated whitelist key bytes */
+    uint16_t filter_off[HPULOGC_MAX_SINK_FILTER_KEYS]; /*!< Key byte offsets into filter_pool */
+    uint8_t filter_len[HPULOGC_MAX_SINK_FILTER_KEYS];  /*!< Key byte counts */
+    uint8_t filter_count;            /*!< Whitelist key count (0 = no filter) */
+    uint8_t* filter_wire;            /*!< Filtered wire scratch (sync path;
+                                          guarded by filter_mu) */
+    size_t filter_wire_cap;          /*!< Wire scratch capacity */
+    hpu_mutex_t filter_mu;           /*!< Serializes the sync-path scratch:
+                                          async-build consumer threads
+                                          dispatch to sync sinks
+                                          concurrently (§4.10.4) */
 } hpu_output_base_t;
 
 /** @brief Opaque sink handle (hpu_output_base_t at offset 0). */
@@ -201,6 +216,35 @@ unsigned long long hpu_output_lost_total(hpu_output_t* o);
  * @brief Snapshot one instance's statistics (§4.10.3).
  */
 void hpu_output_get_stats(hpu_output_t* o, hpulogc_sink_stats_t* out);
+
+/* ---- Per-sink field filtering (§4.7.3 `filter keys`, D-R14) ---- */
+
+/**
+ * @brief Apply an instance's field whitelist to an event view, in place.
+ *
+ * Matches the event's wire-encoded field keys against the whitelist and,
+ * when any field is removed, rewrites @p view with the surviving subset:
+ * a filtered wire region rebuilt into @p scratch (grown on demand) and a
+ * decoded field array in @p out_fields (borrowed views into @p scratch).
+ * The shared producer staging is never touched: @p view must be a
+ * caller-owned mutable copy (sync dispatch) or the worker's private
+ * decode staging (async). @p scratch must be serialized by the caller:
+ * the sync dispatch path guards it with the base filter_mu (async-build
+ * consumer threads dispatch to sync sinks concurrently, §4.10.4) and the
+ * async worker is per-instance single-thread.
+ *
+ * @param b           Instance base (whitelist + scratch owner).
+ * @param view        Mutable event view to rewrite.
+ * @param out_fields  Decode target for the surviving fields.
+ * @param out_max     Capacity of @p out_fields.
+ * @param scratch     Wire scratch buffer (owned by the caller's context).
+ * @param scratch_cap Current capacity of @p scratch.
+ * @return            Number of removed fields (0 = view left unchanged).
+ */
+size_t hpu_output_filter_apply(const hpu_output_base_t* b,
+                               hpulogc_event_t* view,
+                               hpulogc_field_t* out_fields, size_t out_max,
+                               uint8_t** scratch, size_t* scratch_cap);
 
 /* ---- Internal helpers for built-in sinks (§4.10.4) ---- */
 

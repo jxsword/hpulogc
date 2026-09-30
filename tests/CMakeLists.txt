@@ -110,6 +110,7 @@ endforeach()
 
 
 hpu_add_test_binary(test_sink_registry SRCS unit/test_sink_registry.c)
+hpu_add_test_binary(test_sink_filter SRCS unit/test_sink_filter.c)
 hpu_add_test_binary(test_fields SRCS unit/test_fields.c)
 hpu_add_test_binary(test_ini SRCS unit/test_ini.c)
 hpu_add_test_binary(test_format SRCS unit/test_format.c)
