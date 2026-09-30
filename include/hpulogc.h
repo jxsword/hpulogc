@@ -114,6 +114,12 @@ extern "C" {
 #define HPULOGC_MAX_FIELD_KEY_LEN 64
 #endif
 
+#ifndef HPULOGC_MAX_SINK_FILTER_KEYS
+/** @brief Maximum number of keys in a sink's `filter keys` whitelist
+ *         (§4.7.3); a longer list is a configuration error (strict init). */
+#define HPULOGC_MAX_SINK_FILTER_KEYS 8
+#endif
+
 #ifndef HPULOGC_SINK_ABI_VERSION
 /** @brief Sink ops-table ABI version (§4.10.1). Custom sinks must fill this
  *         into hpulogc_sink_ops_t::abi_version at registration time. */
@@ -381,7 +387,7 @@ typedef struct {
     unsigned long long written;        /*!< Records successfully delivered to this sink */
     unsigned long long dropped;        /*!< Records dropped before delivery (async queue full) */
     unsigned long long failed;         /*!< Write failures (incl. after retry/reopen) */
-    unsigned long long fields_dropped; /*!< Reserved (field trimming is global; §4.10.3) */
+    unsigned long long fields_dropped; /*!< Fields dropped by this sink's `filter keys` whitelist (§4.7.3); 0 when no filter is configured. Global trimming (budget/count) is reported by hpulogc_get_stats, not here */
     unsigned long long bytes_written;  /*!< Cumulative bytes counted per delivered event line */
 } hpulogc_sink_stats_t;
 

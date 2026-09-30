@@ -7,6 +7,7 @@
 #include "output.h"
 #include "sink_queue.h"
 #include "../conf/conf_model.h"
+#include "../format/format.h" /* hpu_fields_unpack (filtered view) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -187,7 +188,119 @@ int hpulogc_sink_register(const hpulogc_sink_ops_t* ops)
 static int is_common_key(const char* key)
 {
     return strcmp(key, "enabled") == 0 || strcmp(key, "async") == 0 ||
-           strcmp(key, "queue size") == 0;
+           strcmp(key, "queue size") == 0 ||
+           strcmp(key, "filter keys") == 0;
+}
+
+/**
+ * @brief Walk to the next comma-separated token of a `filter keys` value.
+ *
+ * Tokens are trimmed of surrounding blanks; a comma with no key bytes
+ * before it (leading comma or ",,") is an empty-token error. A trailing
+ * comma at end of value is tolerated (same leniency as an empty value).
+ *
+ * @param p    In/out cursor (starts at the value, advanced past tokens).
+ * @param tok  Set to the first key byte of the token found.
+ * @param tlen Set to the token length in bytes.
+ * @return     1 = token found, 0 = end of value, -1 = empty token.
+ */
+static int filter_next_token(const char** p, const char** tok, size_t* tlen)
+{
+    const char* q = *p;
+
+    while (*q == ' ' || *q == '\t') {
+        q++;
+    }
+    if (*q == '\0') {
+        return 0;
+    }
+    if (*q == ',') {
+        return -1; /* empty token */
+    }
+    *tok = q;
+    while (*q != '\0' && *q != ',') {
+        q++;
+    }
+    while (q > *tok && (q[-1] == ' ' || q[-1] == '\t')) {
+        q--;
+    }
+    *tlen = (size_t)(q - *tok);
+    /* Advance the cursor to just past the token's trailing separator. */
+    while (*q != '\0' && *q != ',') {
+        q++;
+    }
+    if (*q == ',') {
+        q++;
+        *p = q;
+        return 1;
+    }
+    *p = q;
+    return 1;
+}
+
+/**
+ * @brief Parse the `filter keys` whitelist value (§4.7.3, D-R14) into the
+ *        instance base.
+ *
+ * The value is a comma-separated key list (inline quoting is already
+ * stripped by the INI reader); tokens are trimmed of surrounding blanks.
+ * An empty value leaves filtering disabled. Keys are concatenated into a
+ * single malloc'd pool indexed by filter_off/filter_len so matching never
+ * touches the caller's buffers.
+ *
+ * @return 0 on success (filter installed or absent), -1 on a malformed
+ *         value (NULL, an empty token, more than
+ *         HPULOGC_MAX_SINK_FILTER_KEYS keys, or a key longer than
+ *         HPULOGC_MAX_FIELD_KEY_LEN).
+ */
+static int parse_filter_keys(hpu_output_base_t* b, const char* val)
+{
+    size_t total = 0;
+    uint8_t n = 0;
+    const char* p;
+    const char* tok;
+    size_t tlen;
+    char* pool;
+    int r;
+
+    if (val == NULL) {
+        return -1; /* flag-style presence without a value is invalid */
+    }
+    /* Pass 1: measure the tokens into the offset/length tables. */
+    p = val;
+    while ((r = filter_next_token(&p, &tok, &tlen)) == 1) {
+        if (n >= HPULOGC_MAX_SINK_FILTER_KEYS ||
+            tlen > HPULOGC_MAX_FIELD_KEY_LEN) {
+            return -1;
+        }
+        b->filter_off[n] = (uint16_t)total;
+        b->filter_len[n] = (uint8_t)tlen;
+        total += tlen;
+        n++;
+    }
+    if (r < 0) {
+        return -1;
+    }
+    if (n == 0) {
+        return 0; /* empty value: filtering disabled (same as unset) */
+    }
+    pool = malloc(total);
+    if (pool == NULL) {
+        return -1;
+    }
+    /* Pass 2: copy the token bytes (same walk, same boundaries). */
+    {
+        size_t copied = 0;
+
+        p = val;
+        while (filter_next_token(&p, &tok, &tlen) == 1) {
+            memcpy(pool + copied, tok, tlen);
+            copied += tlen;
+        }
+    }
+    b->filter_pool = pool;
+    b->filter_count = n;
+    return 0;
 }
 
 /**
@@ -265,6 +378,10 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
                     goto config_err;
                 }
                 b->async = as;
+            } else if (strcmp(key, "filter keys") == 0) {
+                if (parse_filter_keys(b, val) != 0) {
+                    goto config_err;
+                }
             } else {
                 unsigned long long sz;
 
@@ -289,6 +406,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         if (err != NULL) {
             *err = HPULOGC_ERR_CONFIG;
         }
+        free(b->filter_pool);
         free(b);
         return NULL;
     }
@@ -297,6 +415,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         if (err != NULL) {
             *err = HPULOGC_ERR_CONFIG;
         }
+        free(b->filter_pool);
         free(b);
         return NULL;
     }
@@ -308,6 +427,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         if (ops->destroy != NULL) {
             ops->destroy((hpulogc_sink_t*)(void*)b);
         }
+        free(b->filter_pool);
         free(b);
         return NULL;
     }
@@ -326,6 +446,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
             if (ops->destroy != NULL) {
                 ops->destroy((hpulogc_sink_t*)(void*)b);
             }
+            free(b->filter_pool);
             free(b);
             return NULL;
         }
@@ -339,6 +460,7 @@ config_err:
     if (ops->destroy != NULL) {
         ops->destroy((hpulogc_sink_t*)(void*)b);
     }
+    free(b->filter_pool);
     free(b);
     return NULL;
 }
@@ -360,12 +482,135 @@ void hpu_output_close(hpu_output_t* o, uint32_t drain_timeout_ms)
     if (b->ops->destroy != NULL) {
         b->ops->destroy((hpulogc_sink_t*)(void*)o);
     }
+    free(b->filter_pool);
+    free(b->filter_wire);
     free(o);
 }
 
 /* ------------------------------------------------------------------ */
 /* Dispatch                                                            */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* Per-sink field filtering (§4.7.3 `filter keys`, D-R14)              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Whitelist membership test on wire-encoded key bytes.
+ *
+ * Unpacked field keys are NOT NUL-terminated (they point into the wire
+ * region), so matching must use the wire's key_len, never strlen.
+ */
+static int filter_key_match(const hpu_output_base_t* b, const char* key,
+                            uint16_t key_len)
+{
+    uint8_t i;
+
+    for (i = 0; i < b->filter_count; i++) {
+        if (b->filter_len[i] == (uint8_t)key_len &&
+            memcmp(b->filter_pool + b->filter_off[i], key, key_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+size_t hpu_output_filter_apply(const hpu_output_base_t* b,
+                               hpulogc_event_t* view,
+                               hpulogc_field_t* out_fields, size_t out_max,
+                               uint8_t** scratch, size_t* scratch_cap)
+{
+    const uint8_t* wire = view->fields_wire;
+    size_t len = view->fields_len;
+    uint16_t count = view->field_count;
+    size_t off;
+    size_t wlen;
+    size_t removed;
+    uint16_t i;
+
+    if (b->filter_count == 0 || wire == NULL || len == 0 || count == 0) {
+        return 0;
+    }
+
+    /* Pass 1: measure the kept spans. The wire is a flat sequence of
+     * self-delimiting spans (u16 key_len, u8 type, u8 pad, u16 val_len,
+     * key bytes, value bytes); a subset of spans plus their headers is
+     * never larger than the source region, so the scratch cannot grow. */
+    off = 0;
+    wlen = 0;
+    removed = 0;
+    for (i = 0; i < count && off + 6 <= len; i++) {
+        uint16_t key_len;
+        uint16_t val_len;
+        size_t span;
+
+        memcpy(&key_len, wire + off, 2);
+        memcpy(&val_len, wire + off + 4, 2);
+        span = 6U + (size_t)key_len + val_len;
+        if (off + span > len) {
+            break; /* corrupt region: stop (defensive, as unpack does) */
+        }
+        if (filter_key_match(b, (const char*)wire + off + 6, key_len)) {
+            wlen += span;
+        } else {
+            removed++;
+        }
+        off += span;
+    }
+    if (removed == 0) {
+        return 0; /* nothing filtered: view stays untouched (zero copy) */
+    }
+
+    if (*scratch_cap < wlen) {
+        uint8_t* grown = realloc(*scratch, wlen);
+
+        if (grown == NULL) {
+            return 0; /* keep the unfiltered view on OOM (defensive) */
+        }
+        *scratch = grown;
+        *scratch_cap = wlen;
+    }
+
+    /* Pass 2: copy the kept spans contiguously and pad to 8 bytes so the
+     * rebuilt region keeps the wire's alignment contract (§4.4.1). */
+    {
+        uint8_t* dst = *scratch;
+        size_t src = 0;
+        size_t k = 0;
+
+        for (i = 0; i < count && src + 6 <= len; i++) {
+            uint16_t key_len;
+            uint16_t val_len;
+            size_t span;
+
+            memcpy(&key_len, wire + src, 2);
+            memcpy(&val_len, wire + src + 4, 2);
+            span = 6U + (size_t)key_len + val_len;
+            if (src + span > len) {
+                break;
+            }
+            if (filter_key_match(b, (const char*)wire + src + 6, key_len)) {
+                memcpy(dst + k, wire + src, span);
+                k += span;
+            }
+            src += span;
+        }
+        while (k % 8U != 0) {
+            dst[k++] = 0;
+        }
+
+        /* Rebuild the view: wire points at the scratch, decoded fields
+         * are re-unpacked into the caller's row. */
+        view->fields_wire = *scratch;
+        view->fields_len = k;
+        view->field_count =
+            (uint16_t)hpu_fields_unpack(*scratch, k,
+                                        (uint16_t)(count - removed),
+                                        out_fields, out_max);
+        view->fields = view->field_count > 0 ? out_fields : NULL;
+    }
+    return removed;
+}
 
 int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
 {
@@ -382,6 +627,24 @@ int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
             return -1;
         }
     } else {
+        if (b->filter_count > 0 && ev->field_count > 0 &&
+            ev->fields_wire != NULL) {
+            /* Sync filtering (§4.7.3): the caller's ev is shared staging
+             * across all sinks in the routing loop, so rewrite a stack
+             * copy instead. The base-owned wire scratch is single-owner
+             * here: sync dispatch holds conf_lock (§4.10.4). */
+            hpulogc_event_t view = *ev;
+            hpulogc_field_t fscratch[HPULOGC_MAX_FIELDS];
+            size_t removed = hpu_output_filter_apply(
+                    b, &view, fscratch, HPULOGC_MAX_FIELDS, &b->filter_wire,
+                    &b->filter_wire_cap);
+
+            if (removed > 0) {
+                hpu_at_fetch_add_u64(&b->st_fields, (uint64_t)removed,
+                                     HPU_MO_RELAXED);
+                ev = &view;
+            }
+        }
         b->ops->emit((hpulogc_sink_t*)(void*)o, ev);
     }
     hpu_at_fetch_add_u64(&b->st_written, 1, HPU_MO_RELAXED);
@@ -466,6 +729,7 @@ void hpu_output_get_stats(hpu_output_t* o, hpulogc_sink_stats_t* out)
     out->written = hpu_at_load_u64(&b->st_written, HPU_MO_ACQUIRE);
     out->dropped = hpu_at_load_u64(&b->st_dropped, HPU_MO_ACQUIRE);
     out->failed = hpu_at_load_u64(&b->st_failed, HPU_MO_ACQUIRE);
+    out->fields_dropped = hpu_at_load_u64(&b->st_fields, HPU_MO_ACQUIRE);
     out->bytes_written = hpu_at_load_u64(&b->st_bytes, HPU_MO_ACQUIRE);
 }
 
