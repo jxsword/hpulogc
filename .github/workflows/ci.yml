@@ -4,10 +4,13 @@
 # Platforms:
 #   - linux-smoke:   {gcc, clang} x {C99, C11} smoke matrix + 2 MPMC combos
 #                    (one locked, one lockfree)
+#   - linux-arm64-smoke: native arm64 runner (free for public repos), two
+#                    representative combos (one locked, one lockfree)
 #   - macos-matrix:  {C99, C11} x {locked, lockfree} x {SPSC, MPSC, MPMC}
 #   - macos-presets: full / min / sync_thread / async_single
 #   - macos-asan:    ASan build + full ctest (zero reports required)
 #   - macos-arch:    x86_64 binaries under Rosetta on the arm64 runner
+#   - macos-universal: lipo fat binaries (arm64 + x86_64) + merged-tool smoke
 #   - macos-tsan:    weekly schedule (or manual workflow_dispatch), default
 #                    build + lockfree MPMC combination
 #
@@ -59,6 +62,52 @@ jobs:
           - { cc: clang, std: 11,  lf: 'OFF', conc: MPSC }
           - { cc: gcc,   std: 99,  lf: 'OFF', conc: MPMC }
           - { cc: clang, std: 11,  lf: 'ON',  conc: MPMC }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DHPULOGC_C_STANDARD=${{ matrix.std }}
+          -DHPULOGC_LOCKFREE=${{ matrix.lf }}
+          -DHPULOGC_CONCURRENCY=${{ matrix.conc }}
+          -DHPULOGC_BUILD_SHARED=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Validate example config (hpulogc_chk_conf)
+        run: ./build/tools/hpulogc_chk_conf examples/conf_eg.ini
+      - name: Test
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log
+          exit "${PIPESTATUS[0]}"
+      - name: Failure annotations
+        if: failure()
+        run: |
+          {
+          echo "::group::ctest failure summary"
+          grep -E "FAIL \[|tests failed|\*\*\*Failed" ctest.log | head -40
+          echo "::endgroup::"
+          grep -E "FAIL \[" ctest.log | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          } || true
+
+  # ------------------------------------------------------------------
+  # Native Linux arm64 (ubuntu-24.04-arm, free for public repos — D-R19).
+  # Two representative combos (one locked, one lockfree) keep minutes
+  # bounded; compiler/standard breadth stays on x86_64 (linux-smoke).
+  # ------------------------------------------------------------------
+  linux-arm64-smoke:
+    if: github.event_name != 'schedule'
+    name: linux-arm64 ${{ matrix.cc }} ${{ matrix.tag }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { tag: locked-MPSC,  cc: gcc,   std: 11, lf: 'OFF', conc: MPSC }
+          - { tag: lockfree-MPMC, cc: clang, std: 99, lf: 'ON',  conc: MPMC }
     steps:
       - uses: actions/checkout@v5
       - name: Configure
@@ -251,6 +300,57 @@ jobs:
             echo "::error::$line"
           done
           } || true
+
+  # Universal binary (D-R18): merge the arm64 (native) and x86_64
+  # (cross-compiled) static/shared libraries into single fat binaries with
+  # lipo, then smoke-run the merged chk_conf tool (the arm64 slice executes
+  # natively on this runner). Not a §16.3 DoD item; CI-only artifact check.
+  macos-universal:
+    if: github.event_name != 'schedule'
+    name: macos universal binary
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare toolchain
+        run: command -v ninja || brew install ninja
+      - name: Build (arm64, native)
+        run: |
+          cmake -S . -B build-arm64 -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DHPULOGC_LOCKFREE=ON \
+            -DHPULOGC_CONCURRENCY=MPMC
+          cmake --build build-arm64
+      - name: Build (x86_64)
+        run: |
+          cmake -S . -B build-x86_64 -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DHPULOGC_LOCKFREE=ON \
+            -DHPULOGC_CONCURRENCY=MPMC
+          cmake --build build-x86_64
+      - name: Merge fat binaries with lipo
+        run: |
+          set -euo pipefail
+          mkdir -p build-universal
+          for arm_artifact in $(find build-arm64 -name 'libhpulogc*.a' -o -name 'libhpulogc*.dylib'); do
+            base=$(basename "$arm_artifact")
+            x86_artifact=$(find build-x86_64 -name "$base" | head -1)
+            test -n "$x86_artifact" || { echo "::error::no x86_64 counterpart for $base"; exit 1; }
+            lipo -create "$arm_artifact" "$x86_artifact" -output "build-universal/$base"
+            lipo -info "build-universal/$base"
+            file "build-universal/$base"
+          done
+          test -n "$(find build-universal -name 'libhpulogc*.a')" || { echo "::error::static lib missing"; exit 1; }
+      - name: Smoke-run merged tool (arm64 slice natively)
+        run: |
+          set -euo pipefail
+          tool_arm=$(find build-arm64 -name 'hpulogc_chk_conf' -type f | head -1)
+          tool_x86=$(find build-x86_64 -name 'hpulogc_chk_conf' -type f | head -1)
+          mkdir -p build-universal
+          lipo -create "$tool_arm" "$tool_x86" -output build-universal/hpulogc_chk_conf
+          lipo -info build-universal/hpulogc_chk_conf
+          ./build-universal/hpulogc_chk_conf examples/conf_eg.ini
 
   # TSan only on schedule / manual dispatch (fork tests excluded by the
   # build system under TSan; ring overwrite cases self-skip, decision 9).
