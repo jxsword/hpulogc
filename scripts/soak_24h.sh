@@ -124,15 +124,22 @@ done
 
 # Hourly console-capture truncation keeps disk usage bounded (the file
 # stays open and becomes sparse); runs detached alongside the drivers.
+# The detached bash only receives the function body, so OUT and the
+# variant list are passed as arguments — relying on the parent's
+# variables silently truncates nothing (paths collapse to
+# "/$variant/...", the redirect fails and `|| true` swallows it; the
+# console captures then grow until the disk is full, which is exactly
+# how the first cloud 24h run died at 18.7h).
 truncate_loop() {
+    out="$1"; shift
     while :; do
         sleep 3600
-        for variant in "${VARIANTS[@]}"; do
-            : > "$OUT/$variant/console_capture.log" 2>/dev/null || true
+        for variant in "$@"; do
+            : > "$out/$variant/console_capture.log" 2>/dev/null || true
         done
     done
 }
-nohup bash -c "$(declare -f truncate_loop); truncate_loop" \
+nohup bash -c "$(declare -f truncate_loop); truncate_loop '$OUT' $VARIANTS" \
     > "$OUT/truncate_loop.log" 2>&1 &
 echo $! > "$OUT/truncate_loop.pid"
 
