@@ -11,9 +11,10 @@
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
 - **INI 配置**（zlog 兼容词法）+ 热加载（inotify / kqueue / ReadDirectoryChangesW，
   SIGHUP 触发，通知不可用时轮询回退）+ 原子替换回滚
-- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、6 类内置
-  sink（console/rollingfile/syslog/tcp/udp/null，其中网络型 tcp/udp 为
-  v0.6.2 新增、POSIX 专属）、per-sink 异步队列 + 专属
+- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、8 类内置
+  sink（console/rollingfile/syslog/tcp/udp/unix/fifo/null，其中网络型
+  tcp/udp 为 v0.6.2 新增、本机 IPC 型 unix/fifo 为 v0.6.7 新增，四者
+  POSIX 专属）、per-sink 异步队列 + 专属
   worker 批量写出、结构化字段（typed key=value）与 `%v` 占位符、
   per-sink 统计
 - **路由规则**（类目选择器 × 级别范围，v0.6.4 起支持取反
@@ -201,9 +202,10 @@ powershell -ExecutionPolicy Bypass -File scripts\run_matrix.ps1
 
 每个输出实例都是一个 **sink**（vtable 抽象，`hpulogc_sink_ops_t`），
 通过 `[outputs]`（INI）或 `hpulogc_config_t.sinks[]`（代码内，能力对等）
-声明实例；内置 6 类：`console`、`rollingfile`（`file` 为别名）、
+声明实例；内置 8 类：`console`、`rollingfile`（`file` 为别名）、
 `syslog`（POSIX 专属，进程内单实例）、**`tcp` / `udp`**（网络型，v0.6.2
-新增，POSIX 专属）、`null`。未注册的类型一律 fail-fast。每个实例可选
+新增）、**`unix` / `fifo`**（本机 IPC 型，v0.6.7 新增；四者 POSIX 专属，
+Windows 构建不可注册）、`null`。未注册的类型一律 fail-fast。每个实例可选
 `async = on` 走 **per-sink 异步投递**：专属有界字节环队列 + 专属
 worker 批量写出，队列满丢弃当前事件并计入该实例的 `dropped`（恒不阻塞
 投递方；`queue size` 支持 64KB~16MB）。
@@ -246,6 +248,32 @@ worker.* = rendered, worker
 [outputs]
 net_tcp   = tcp, host=127.0.0.1, port=514, async=on, queue size=1M, reconnect backoff=1, reconnect backoff max=30
 net_udp   = udp, host=127.0.0.1, port=514, async=on, queue size=1M, mtu=1472
+```
+
+**本机 IPC 型 sink**（`unix` / `fifo`，rd_v0.6 §4.10.9；v0.6.7 起内置，
+POSIX 专属，Windows 构建不可注册；同样**推荐 `async = on`**）：
+
+- `unix`：Unix domain socket **客户端**——`path` 必填且须为**已存在**
+  的 socket 文件（由对端进程 bind；库只 connect，从不创建/绑定/删除
+  端点）。`socktype = dgram`（默认，每条记录恰一个数据报，无粘包）或
+  `stream`（同 TCP 行帧 `\n`）。start connect 失败即 init 失败
+  （fail-fast）；运行期对端重启自动按与 TCP 完全相同的**指数退避**
+  重连（`reconnect backoff` / `reconnect backoff max`）。
+- `fifo`：命名管道（FIFO）**写端**——`path` 必填且须为已存在的 FIFO；
+  **不做 popen**（rotatelogs/multilog 类场景由使用方自行 `mkfifo` 并
+  启动读取进程，附录 A.1 #10）。恒 `O_NONBLOCK`：读取者未就绪
+  （`ENXIO`）**不导致启动失败**（实例进入等待态，事件计 `failed`，
+  按退避周期重试——读取进程晚于日志方启动是正常时序）；读取者关闭
+  （EPIPE）自动重开 + 退避；FIFO 满（EAGAIN）丢弃计 `failed`，绝不
+  阻塞；库保证不因 SIGPIPE 终止宿主进程。
+- 共同：能力位/at-most-once/记账/热重载语义沿用网络型 sink 基线；
+  端点路径长度受平台限制（UDS 超 `sun_path` 上限 start 失败）。
+
+```ini
+[outputs]
+# 端点须已存在：socket 文件由对端进程创建；FIFO 须先 mkfifo 并自行启动读取进程
+ipc_unix  = unix, path=/var/run/myapp/log.sock, async=on, queue size=1M, socktype=dgram
+ipc_fifo  = fifo, path=/var/run/myapp/log.pipe, async=on, queue size=1M
 ```
 
 **结构化字段**（`HPULOGC_*_EX` 宏族，I64/U64/F64/BOOL/STR 五类值，
