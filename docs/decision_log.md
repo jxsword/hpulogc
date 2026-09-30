@@ -690,3 +690,18 @@
   `src/output/sink_fifo.c` start/emit 实现、§10.3 配置模板注释；
   实现层自由度（SIGPIPE 抑制、ENXIO/EPIPE 共用退避机件等）另见
   implementation_notes「IPC 型 sink」节。
+
+### D-R6 注记（2026-09-30 第二次追加：云上第一轮环境故障终止 + 重跑登记）
+
+- 事实：云上第一轮（基线 `4c687cd`）在 t≈18.7h 被宿主机磁盘耗尽终止，
+  未产出 FINAL/VERDICT。根因是 `scripts/soak_24h.sh` 的 console 捕获
+  按小时截断循环在分离启动时丢失 `OUT`/`VARIANTS` 作用域，截断静默
+  失效（`|| true` 吞错），两变体 console 捕获各增长 ~2.9GB 撑满 20G
+  盘——脚本缺陷而非库缺陷，已修复并合并（PR #38，main @ 27fb597）。
+- 失败窗口的库行为：停顿（STALL）全部出现在磁盘满之后，记账恒等式
+  全程（含 ENOSPC 窗口）零 violations，进程无崩溃——详证见
+  `docs/perf_report_soak.md` §4。
+- 处置：WSL 对照轨不受影响（双配置 `VERDICT PASS`，报告 §3/§5）；
+  云上清理残留物后于 2026-09-30 17:40 CST 以最新 main 重启 24h 重跑
+  （负载形态不变，D-R6 判据不变），判定待回填报告 §4.3。原"17:19
+  完成"的预期由重跑 ETA（2026-10-01 ~17:40 CST）取代。
