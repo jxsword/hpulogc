@@ -672,3 +672,27 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | N-7 | 测试文件落点 | 新文件 `tests/integration/test_ipc_sinks.c`（而非扩写 test_net_sinks.c） | UDS/FIFO 用例需要 mkdtemp 路径与 mkfifo/mksockep 监听生命周期，与 test_net_sinks 的端口监听辅助无共享代码；独立文件让 `HPULOGC_SINK_UNIX`/`HPULOGC_SINK_FIFO` noop 门控各自独立（裁剪组合仍全绿） |
 | N-8 | 行帧与写入粒度 | unix stream 按 TCP 模式跨记录合并行帧（64KB priv 预分配，整批一次写）；**fifo 为每记录单次 write**（64KB staging 缓冲装 `line+'\n'`，不跨记录合并）；unix dgram 每记录恰一个数据报、不加 `\n` | dgram 数据报边界即记录边界（规范条款）。fifo 单记录单写的原因：记录 ≤ PIPE_BUF（Linux 4096）时非阻塞 write 原子——要么整条进管道要么 EAGAIN 零写入，记账精确到记录且流中无撕裂行（> PIPE_BUF 的记录仍可能部分写入，残行由接收方按无终止符丢弃，同 TCP 明示）；跨记录合并批会把 EAGAIN 的记账边界模糊化。代价：每记录一对 sigmask syscall + 一次 write（可接受） |
 | N-9 | SIGPIPE 抑制的平台分流 | Linux（POSIX 线程定向投递）：`pthread_sigmask` 阻塞 + 写后 `sigpending` 探测 + 条件 `sigwait` 消费 + 恢复掩码。**Darwin：`psignal` 将管道 SIGPIPE 进程定向**（投递给任一未阻塞该信号的线程，只挡写线程无效——CI macos 全 leg 当场死于 SIGPIPE），改写期间临时 `sigaction(SIG_IGN)` 并立即恢复 | 本地测试当场暴露：write 报 EPIPE 时 SIGPIPE 已按线程掩码挂起，直接恢复掩码会立即按默认处置投递、杀死宿主进程——"阻塞"只延迟不消除。Darwin 的 SIG_IGN 窗口恰覆盖一次 write：窗口内宿主自己的坏管写仍返回 EPIPE，只是丢信号通知；恢复写入前一次 sigaction 保存的旧处置。Linux 侧 SIGPIPE 只会在本函数 write 中生成，探测无竞态、`sigwait` 因已挂起而立即返回；若宿主自身已有挂起 SIGPIPE 会被顺带消费（边缘场景，可接受）。两平台均不留持久的全局处置变更 |
+
+# HTTP/Webhook sink http（rd_v0.6 v0.6.8）实现自由度登记
+
+> 任务书授权"实现自由度自定后登记"。TLS 路线与 async=off 两个用户决策项
+> 见 decision_log D-R21/D-R22；以下为实现层选择。
+
+| # | 自由度 | 决定 | 理由与代价 |
+|---|--------|------|-----------|
+| H-1 | 响应处理语义 | 在 `timeout ms` 内读取状态行**与响应头**，按 `Content-Length` 有界排空 body（上限 64KB，防对端失控）后复用连接；chunked / 无 Content-Length / 声明 close / 响应头超 2KB → 本次后不复用连接 | 任务书草案"仅读状态行"会在 keep-alive 连接内留下残留字节、污染下一批响应解析；响应头是判定 Content-Length 边界的必要步骤。排空上限防对端失控拖死 worker。代价：单请求响应侧最多多一次 memcpy 级开销 |
+| H-2 | hpu_net 契约扩展 | append-only 新增 `hpu_net_set_timeout(fd, send_ms, recv_ms)`（SO_SNDTIMEO/SO_RCVTIMEO）与 `hpu_net_recv(fd, buf, cap)`（单次 recv，EINTR 透明重试，超时统一映射 errno=ETIMEDOUT）；win32_net.c 补可编译桩（N-2 先例） | sink 层不触 OS 网络头的平台分层原则；POSIX 的 EAGAIN/EWOULDBLOCK 差异在契约层归一。connect 用阻塞式（OS 默认超时），`timeout ms` 不含 connect 阶段——规范条款明示该边界 |
+| H-3 | NDJSON 转义落点 | sink_http.c 内等效实现 format.c 的 JSON 字符串转义（`"`/`\`/五短控制转义/`\u00xx`/UTF-8 透传，~40 行），不提取共享 | 与各 sink 自带 `parse_uint` 的仓库惯例一致；format.c 的转义绑定其私有 render_buf_t 且为渲染层热路径，导出共享会牵动渲染层 ABI 内部结构。代价：两处语义需人工保持一致（注释互指） |
+| H-4 | 平台范围 | v1 仅 POSIX：sink_http.c 整体 `#if !defined(_WIN32)`，CMake 走 NOT WIN32 两段式（同 tcp/udp/unix/fifo） | hpu_net 的 Win32 后端虽可编译，但 http 的响应读取/超时原语在 Win32 侧无运行验证；与 §4.10.8"v1 POSIX-only"家族决定一致，Windows 运行支持与 tcp/udp 一并留后续工单 |
+| H-5 | 批量与缓冲语义 | emit_batch 增量组装 body：priv 预分配 64KB 缓冲将满即先发一次 POST 再续装（一批可拆多个 POST，规范明示）；ndjson 模式 buf[0] 预留 `[`、收尾补 `]`；单事件行（转义后）超缓冲 → 计 failed 不投递不截断 | 截断会产生非法 JSON 元素，宁可不投递（记账 failed 如实反映）；拆分让 batch_max 与缓冲解耦。64KB 与 TCP 合并缓冲一致 |
+| H-6 | URL 与 header 存储 | configure 时解析校验 `url`（仅 http://；支持 `[IPv6]` 字面量，括号剥离存 host + is_v6 标记，Host 头重建括号；缺省端口 80/路径 `/`；whitespace/@/控制字节拒绝）；`header` 可重复 ≤8 个，值首冒号分割、值前导空白裁剪、CR/LF 任何位置拒绝（头注入防护），全部深拷入 priv | 配置错误在 configure 阶段早暴露（ERR_CONFIG）；深拷保证热重载/配置释放后 priv 自持。IPv6 字面量是 URL 标准形态，localhost 测试也需要 |
+| H-7 | 退避机件复用 | `reconnect backoff`/`reconnect backoff max` 键名与 mark_disconnected/reconnect 状态机逐字复用 sink_tcp 模式；另设 `http_conn_close`（对端声明 close/无法判定长度时的**计划性**关闭：关 fd、清 body、**不 arm 退避**） | 计划性关闭后下一批应立即重连——若复用 mark_disconnected 会把健康对端误判为故障进入退避（本地测试暴露该区分的必要性）；故障路径才 arm 退避 |
+
+# HTTP/Webhook sink 会话新增缺陷登记（P-8）
+
+> 本会话（网络 sink 第三期）交付过程中发现并修复的既有缺陷。P-6/P-7 先例：
+> 缺陷在暴露它的 PR 内修复并登记。
+
+| 编号 | 位置与状态 | 缺陷 | 修复 |
+|------|-----------|------|------|
+| P-8 | `src/output/sink_queue.c` `sq_decode`（**已修**，本 PR） | worker 解码基址用了 `q->buf`（二级队列环原始缓冲），而调用方传入的 `off` 是**线性化 sweep 副本内的相对偏移**（P-7 引入 sweep 语义时既有的错位，自首个异步实现 2055f0a 起 `base = q->buf` 即与相对偏移调用并存）。后果：凡 sweep 起点不在环首（`head%cap != 0`，即除首 sweep 外的全部 sweep——head 单调递增），解码读的是环起始处的**最老记录**：异步 sink 收到重复的旧记录、本轮真正 swept 的记录丢失，且记账无感知（written 按 hand-off 计）。为何长期潜伏：二级队列此前无任何内容断言（test_sink_async 只断言 written/dropped 计数；24h 压测判据 `accepted == written` 也闭合于 hand-off 语义）；首个对异步投递做逐条内容断言的是本会话的 test_http_sink（TSan 变体下时序变化使部分 sweep 必现，本地默认构建为概率性） | `sq_decode` 基址改 `ctx->sweep`（linearized 副本，q->cap 尺寸的界检查保持有效），注释写明 P-8 与偏移语义。回归：test_sink_async 新增 `sink_async_content_no_dup`（三段 burst + 间隔强制多次部分 sweep，断言 6 条 marker 各恰好一次）；test_http_sink 全套内容断言构成持续回归 |
