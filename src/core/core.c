@@ -1125,8 +1125,18 @@ void hpulogc_get_build_info(hpulogc_build_info_t* info)
 #else
 #define HPU_SINKS_PART4 ""
 #endif
+#if defined(HPULOGC_SINK_UNIX)
+#define HPU_SINKS_PART5 ",unix"
+#else
+#define HPU_SINKS_PART5 ""
+#endif
+#if defined(HPULOGC_SINK_FIFO)
+#define HPU_SINKS_PART6 ",fifo"
+#else
+#define HPU_SINKS_PART6 ""
+#endif
     info->sinks = HPU_SINKS_PART1 HPU_SINKS_PART2 HPU_SINKS_PART3
-                  HPU_SINKS_PART4;
+                  HPU_SINKS_PART4 HPU_SINKS_PART5 HPU_SINKS_PART6;
 }
 
 int hpulogc_get_sink_stats(const char* name, hpulogc_sink_stats_t* stats)
