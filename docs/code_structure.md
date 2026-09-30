@@ -39,9 +39,10 @@ hpulogc/
 │   │   ├── hpu_signal.h          SIGHUP 注册契约（热加载触发）
 │   │   ├── hpu_net.h             网络/socket 原语契约（resolve、stream/
 │   │   │                         dgram open、send/sendto/close + UDS
-│   │   │                         connect 型 open；tcp/udp/unix sink 用，
-│   │   │                         §4.10.8/§4.10.9；发送路径保证不触发
-│   │   │                         SIGPIPE）
+│   │   │                         connect 型 open + recv/send-recv 超时；
+│   │   │                         tcp/udp/unix/http sink 用，
+│   │   │                         §4.10.8/§4.10.9/§4.10.10；发送路径保证
+│   │   │                         不触发 SIGPIPE）
 │   │   ├── posix/
 │   │   │   ├── posix_sync.c      pthread mutex/cond（MONOTONIC condattr）
 │   │   │   ├── posix_thread.c    pthread 封装 + pthread_atfork
@@ -53,7 +54,8 @@ hpulogc/
 │   │   │   ├── posix_signal.c    SIGHUP handler（仅置 sig_atomic_t 标志）
 │   │   │   ├── posix_net.c       socket 原语：resolve/stream/dgram open、
 │   │   │   │                     send(MSG_NOSIGNAL/SO_NOSIGPIPE)、
-│   │   │   │                     sendto、close + UDS connect 型 open
+│   │   │   │                     sendto、close + UDS connect 型 open +
+│   │   │   │                     recv/SO_SNDTIMEO·SO_RCVTIMEO 超时
 │   │   │   │                     （unix stream/dgram，§4.10.9）
 │   │   │   ├── posix_watcher_poll.c  轮询回退后端（mtime+size 基线）
 │   │   │   └── posix_watcher.c   非 Linux POSIX 的公共入口（→轮询）
@@ -125,6 +127,10 @@ hpulogc/
 │   │   ├── sink_fifo.c           FIFO sink（写端恒 O_NONBLOCK；ENXIO
 │   │                             等待态退避重试不 fail-fast、EPIPE
 │   │                             重开、SIGPIPE 平台分流抑制，§4.10.9）
+│   │   ├── sink_http.c           HTTP/Webhook sink（手写 HTTP/1.1 明文
+│   │                             POST；NDJSON/lines 批量、keep-alive
+│   │                             复用 + 有界响应排空、退避重连、
+│   │                             at-most-once；async=on 必需，§4.10.10）
 │   │   └── rotate.c              归档命名模板展开、时间桶边界
 │   │                             （UTC 民历算法/本地 mktime）、冲突递增、
 │   │                             max files 清理、.latest 符号链接
@@ -194,6 +200,10 @@ hpulogc/
 │   │                             ENOENT/sun_path fail-fast、对端重启
 │   │                             重连、ENXIO 延迟重试、EPIPE 重开、
 │   │                             EAGAIN 丢弃（§4.10.9）
+│   │   ├── test_http_sink.c      http：mini HTTP server 断言请求形态
+│   │                             /NDJSON 转义、批量拆分、500/超时
+│   │                             at-most-once、keep-alive 重连、
+│   │                             async=off/坏 URL 拒绝（§4.10.10）
 │   │   ├── test_diskfail.c       I/O 注入：写失败重开、lost 会计、
 │   │                             init 打开失败 fail-fast
 │   ├── fuzz/
@@ -243,7 +253,7 @@ hpulogc/
 | hpu_tid.h | 数值线程 id | GetCurrentThreadId | pthread_threadid_np |
 | hpu_tls.h | 带析构的 TLS 槽 | TlsAlloc 族 | 复用 posix 层 |
 | hpu_signal.h | SIGHUP 安装 + 原子取清 | 无（恒 -1） | 复用 posix 层 |
-| hpu_net.h | resolve/stream/dgram open、send/sendto/close、UDS connect 型 open（§4.10.8/§4.10.9） | win32_net.c 可编译桩（v1 网络/IPC sink 不在 Windows 编入） | 复用 posix 层 |
+| hpu_net.h | resolve/stream/dgram open、send/sendto/close、UDS connect 型 open、recv/set_timeout（§4.10.8/§4.10.9/§4.10.10） | win32_net.c 可编译桩（v1 网络/IPC/HTTP sink 不在 Windows 编入） | 复用 posix 层 |
 
 动态库导出属性在公共头 `HPULOGC_API`（GCC/Clang visibility + Windows
 dllexport/dllimport），不属平台层。
@@ -255,7 +265,7 @@ dllexport/dllimport），不属平台层。
   声明的函数，未新增/修改任何契约签名（hpu_sync.h 的 WIN32 结构体
   分支为 Phase 1 预定的 Phase 2 填充点）。实现要点与 Windows 特有
   行为决策见 implementation_notes.md 的 Phase 2 章节。（v0.6.2 起
-  win32_net.c 为 hpu_net 契约的可编译后端；tcp/udp/unix/fifo sink
+  win32_net.c 为 hpu_net 契约的可编译后端；tcp/udp/unix/fifo/http sink
   依 §4.7.4 不在 Windows 编入，运行支持为后续工单。）
 - `src/atomic/atomic_msvc.h`：✅ 启用并验证——MSVC 与 MinGW-w64
   均走 `HPULOGC_ATOMIC_BACKEND_MSVC`（Windows 后端唯一，§4.3）；

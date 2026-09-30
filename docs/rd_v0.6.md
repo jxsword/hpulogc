@@ -328,7 +328,7 @@ sink 的**私有键**（逐项交给 `configure`）：
 | `HPULOGC_ENABLE_SOURCE_LOC` | ON | `__FILE__`/`__LINE__` 捕获 |
 | `HPULOGC_LOCKFREE` | OFF | 无锁队列（选择 `ringbuf_lockfree.c` / `ringbuf_locked.c`，§3.3） |
 | `HPULOGC_CONCURRENCY` | MPSC | SPSC / MPSC / MPMC |
-| `HPULOGC_SINKS` | console,rollingfile,syslog,tcp,udp,unix,fifo,null | 内置 sink 类型白名单（逗号分隔；syslog/tcp/udp/unix/fifo 在 Windows 自动排除；min 预设强制 console,rollingfile，§4.7.4） |
+| `HPULOGC_SINKS` | console,rollingfile,syslog,tcp,udp,unix,fifo,http,null | 内置 sink 类型白名单（逗号分隔；syslog/tcp/udp/unix/fifo/http 在 Windows 自动排除；min 预设强制 console,rollingfile，§4.7.4） |
 | `HPULOGC_COMPILE_TIME_LEVEL` | TRACE（即不裁剪） | 编译期移除低于该级别的日志代码（仅作用于便捷宏，见 §4.1）；允许取值 `HPULOGC_LEVEL_TRACE` ~ `HPULOGC_LEVEL_FATAL` 及 `HPULOGC_LEVEL_OFF` |
 
 > **被裁剪功能的 API 行为**：对外 API 符号仍保留（stub 实现），调用时返回 `HPULOGC_ERR_CONFIG`（如 `HPULOGC_ENABLE_CATEGORY=OFF` 时的 `hpulogc_set_level_for_category`），不产生未定义行为。
@@ -2148,6 +2148,10 @@ HTTP/Webhook sink（任务来源仓库 todo.md 二.11 网络型 sink 第三期�
 4. §10.3 配置模板追加 http 键位图例与示例（INI 片段经 `hpulogc_chk_conf`
    实测）。
 5. §17 P1 行追加「HTTP/Webhook sink（§4.10.10）」。
+6. （2026-09-30 追记，README/code_structure 文档同步时补漏）§4.8 选项表
+   `HPULOGC_SINKS` 行默认值同步为
+   `console,rollingfile,syslog,tcp,udp,unix,fifo,http,null`（Windows
+   自动排除含 http），与 §4.7.4 对齐。
 
 ---
 
