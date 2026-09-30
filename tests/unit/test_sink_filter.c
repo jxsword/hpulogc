@@ -270,10 +270,14 @@ TEST(filter_async)
     CHECK_EQ(hpulogc_get_sink_stats("cap0", &st), HPULOGC_OK);
     CHECK_EQ(st.written, 1);
     CHECK_EQ(st.fields_dropped, 1);
+    /* The g_cap_* capture state is written by the sink worker thread
+     * (plain, non-atomic globals). hpulogc_shutdown() joins that thread,
+     * which provides the happens-before needed to read them here —
+     * polling the atomic stats alone does not (TSan-flagged race). */
+    hpulogc_shutdown();
     CHECK_EQ(g_cap_count, 1);
     CHECK_EQ(g_cap_last_field_count, 1);
     CHECK(memcmp(g_cap_last_keys[0], "k1", FILTCAP_KEY_LEN) == 0);
-    hpulogc_shutdown();
 }
 
 TEST(filter_strict_init_errors)
