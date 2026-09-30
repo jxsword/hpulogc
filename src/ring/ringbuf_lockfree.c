@@ -125,8 +125,13 @@ static int lf_deq_contended(const hpu_ring_t* r)
  */
 static uint32_t lf_record_len(const hpu_ring_msg_t* msg)
 {
+    /* The fields wire region is part of the payload (lf_write_record
+     * appends it after the message bytes): omitting fields_len here
+     * makes the record overlap the next slot and the consumer reads a
+     * pad-sized fields_len (field data silently lost; surfaced by the
+     * per-sink filter test). */
     size_t n = sizeof(hpu_ring_meta_t) + msg->category_len + msg->file_len +
-               msg->func_len + msg->msg_len;
+               msg->func_len + msg->msg_len + msg->fields_len;
     return (uint32_t)lf_align8(n);
 }
 
