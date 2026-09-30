@@ -219,6 +219,8 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 | `null` | — | 丢弃一切（测试/基线；也是「审计/指标下线」的路由落点，§7.3） | `SYNC \| ASYNC` | 无 | **默认注册**；`min` 预设排除（§5） |
 | `tcp` | — | TCP 行帧输出（每记录追加 `\n`）；断线指数退避重连（§4.10.8） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（v1 POSIX-only）** |
 | `udp` | — | UDP 数据报输出（每记录恰一个数据报；MTU 截断，§4.10.8） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | 同 `tcp` |
+| `unix` | — | Unix domain socket 客户端输出（connect 型，库不创建端点；dgram 每记录一个数据报 / stream 同 TCP 行帧，§4.10.9） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX UDS | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（POSIX-only）** |
+| `fifo` | — | 命名管道（FIFO）写端输出（恒 `O_NONBLOCK`；无读取者 ENXIO 延迟重试不 fail-fast，§4.10.9） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX FIFO | 同 `unix` |
 
 - `file` 是 `rollingfile` 的**配置别名**：仅把 `rotate` 的**默认值**设为
   `none`，其余键与 `rollingfile` 完全一致；显式书写 `rotate=size|time|both`
@@ -259,6 +261,10 @@ sink 的**私有键**（逐项交给 `configure`）：
 | tcp | `reconnect backoff` | 断线重连初始退避（秒） | 1 | 1–60 |
 | tcp | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
 | udp | `mtu` | 单数据报 payload 上限（字节） | 1472 | 576–65507 |
+| unix/fifo | `path` | IPC 端点路径（**已存在**的 socket 文件 / FIFO；库只 connect/open，不创建端点） | 必填 | v1 POSIX-only（Windows 不可注册）；`unix` 路径超平台 `sun_path` 上限 → start 失败 |
+| unix | `socktype` | `dgram` / `stream` | `dgram` | stream 同 TCP 行帧（`\n`） |
+| unix/fifo | `reconnect backoff` | 重连/重开初始退避（秒） | 1 | 1–60 |
+| unix/fifo | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
 
 - 上述键即 v0.2 `hpulogc_output_t` 的字段集合；`rotate` / `time unit` 的
   取值集合沿用 `hpulogc_rotate_t` / `hpulogc_time_unit_t` 两个枚举（二者
@@ -289,8 +295,8 @@ sink 的**私有键**（逐项交给 `configure`）：
 #### 4.7.4 类型注册与裁剪（规范性）
 
 - 构建选项 **`HPULOGC_SINKS`**（CMake string，逗号分隔白名单，默认
-  `console,rollingfile,syslog,tcp,udp,null`；Windows 自动移除
-  `syslog`/`tcp`/`udp`——POSIX-only）决定哪些
+  `console,rollingfile,syslog,tcp,udp,unix,fifo,null`；Windows 自动移除
+  `syslog`/`tcp`/`udp`/`unix`/`fifo`——POSIX-only）决定哪些
   内置类型被编译进库；未列入的类型：注册表不含之，配置引用时报
   「未注册类型」fail-fast。
 - `min` 预设强制 `HPULOGC_SINKS=console,rollingfile`（§5）；其余预设不
@@ -314,7 +320,7 @@ sink 的**私有键**（逐项交给 `configure`）：
 | `HPULOGC_ENABLE_SOURCE_LOC` | ON | `__FILE__`/`__LINE__` 捕获 |
 | `HPULOGC_LOCKFREE` | OFF | 无锁队列（选择 `ringbuf_lockfree.c` / `ringbuf_locked.c`，§3.3） |
 | `HPULOGC_CONCURRENCY` | MPSC | SPSC / MPSC / MPMC |
-| `HPULOGC_SINKS` | console,rollingfile,syslog,null | 内置 sink 类型白名单（逗号分隔；syslog 在 Windows 自动排除；min 预设强制 console,rollingfile，§4.7.4） |
+| `HPULOGC_SINKS` | console,rollingfile,syslog,tcp,udp,unix,fifo,null | 内置 sink 类型白名单（逗号分隔；syslog/tcp/udp/unix/fifo 在 Windows 自动排除；min 预设强制 console,rollingfile，§4.7.4） |
 | `HPULOGC_COMPILE_TIME_LEVEL` | TRACE（即不裁剪） | 编译期移除低于该级别的日志代码（仅作用于便捷宏，见 §4.1）；允许取值 `HPULOGC_LEVEL_TRACE` ~ `HPULOGC_LEVEL_FATAL` 及 `HPULOGC_LEVEL_OFF` |
 
 > **被裁剪功能的 API 行为**：对外 API 符号仍保留（stub 实现），调用时返回 `HPULOGC_ERR_CONFIG`（如 `HPULOGC_ENABLE_CATEGORY=OFF` 时的 `hpulogc_set_level_for_category`），不产生未定义行为。
@@ -540,7 +546,8 @@ typedef struct {
 #### 4.10.8 网络型 sink（规范性）
 
 > 本节约束随库分发的网络型内置 sink（v0.6.2 起：`tcp` / `udp`），并为后续
-> 网络族（Unix domain socket / FIFO、HTTP/Webhook 等）提供公共语义基线。
+> 网络族（HTTP/Webhook 等）与本机 IPC 型 sink（§4.10.9，v0.6.7 起：
+> `unix` / `fifo`）提供公共语义基线。
 > 平台范围：**v1 仅 POSIX**（`HPULOGC_SINKS` 中的 `tcp`/`udp` 在 Windows
 > 构建上自动排除，同 `syslog`）；Windows 运行支持为后续工单。
 
@@ -599,6 +606,73 @@ typedef struct {
   阻塞且可能动态分配，违反 §4.10.4）。
 - 部分写（send 返回 < 期望）：同一回调内循环补发剩余字节；发送合并缓冲
   由 priv 预分配（create 时清零），稳态零 malloc（§4.10.4）。
+
+#### 4.10.9 本机 IPC 型 sink：unix / fifo（规范性，v0.6.7）
+
+> 本节约束随库分发的本机 IPC 型内置 sink（`unix` = Unix domain socket
+> 客户端、`fifo` = 命名管道写端）。公共语义基线——能力位、`async=on`
+> 推荐、at-most-once 投递边界、记账恒等式（§4.10.3）、热重载销毁重建、
+> 不实现 `periodic`——**沿用 §4.10.8，不在此重复**。平台范围：**仅
+> POSIX**（`HPULOGC_SINKS` 中的 `unix`/`fifo` 在 Windows 构建上自动排除，
+> 同 `syslog`/`tcp`/`udp`）；Win32 named pipe 与 Unix domain socket /
+> FIFO 不同构，列为**远期独立类型**（不复用 `unix`/`fifo` 类型名）。
+
+**类型与配置键**（`configure` 私有键；完整表亦见 §4.7.2）：
+
+| sink | 键 | 含义 | 默认值 | 约束 |
+|------|----|------|--------|------|
+| unix/fifo | `path` | IPC 端点路径 | 必填 | 须为**已存在**的端点（见各 sink 语义）；库只 connect/open，**从不创建、绑定或删除**端点文件 |
+| unix | `socktype` | socket 语义 | `dgram` | `dgram` \| `stream` |
+| unix/fifo | `reconnect backoff` | 重连/重开初始退避（秒） | 1 | 1–60 |
+| unix/fifo | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
+
+**unix 语义**：
+
+- 客户端形态：对端进程承载 socket 文件，库只 connect（不 bind/listen）。
+  `start` 时 connect 失败（`ENOENT`/`ECONNREFUSED` 等）→
+  `HPULOGC_ERR_IO` fail-fast（配置错误早暴露，同 TCP §4.10.8）。
+- `socktype=dgram`（默认）：connect 型数据报 socket，每条记录恰一个
+  数据报（数据报边界即记录边界，无粘包、无帧协议需求）；`EAGAIN`
+  （对端接收缓冲满）→ 丢弃该事件计 `failed`，不阻塞、不重试。
+- `socktype=stream`：同 TCP 行帧——每条记录渲染行追加 `\n` 后写出，
+  部分写同一回调内循环补发。
+- 运行期对端重启（send 报 `EPIPE`/`ECONNRESET`，dgram 为
+  `ECONNREFUSED`）→ 置断线态并进入**指数退避重连**：初始
+  `reconnect backoff`、每次失败 ×2、封顶 `reconnect backoff max`、
+  成功复位；**重连由事件驱动**（emit 路径检查单调时钟），语义与
+  TCP 重连完全一致（§4.10.8）。退避窗口内事件计 `failed`。
+- `path` 长度超过平台 `sun_path` 上限 → `start` 失败
+  `HPULOGC_ERR_IO`。
+
+**fifo 语义**：
+
+- **不做 popen/子进程管理**（附录 A.1 #10 定案：pipe(popen) 不引入）。
+  rotatelogs/multilog 类消费场景由使用方自行 `mkfifo` 并启动外部读取
+  进程，库只写 FIFO 写端（边界明示于 §10.3 配置模板注释）。
+- `start`：先校验 `path` 存在且为 FIFO（`ENOENT` 或非 FIFO →
+  `HPULOGC_ERR_IO` fail-fast——配置错误早暴露，同 rollingfile 打开
+  语义）；随后以 **`O_NONBLOCK`** 打开写端。**无读取者（`ENXIO`）不
+  视为启动失败**：实例进入等待态，事件计 `failed`，emit 路径按退避
+  节奏周期重试打开。与 TCP start fail-fast 语义的差异在此明示，理由：
+  FIFO 读取进程天然可能晚于日志使用方启动/重启，fail-fast 会把时序
+  正常的场景变成启动失败。
+- 行帧：每条记录渲染行追加 `\n` 后写出（FIFO 为字节流，同 TCP 行帧）；
+  部分写同一回调内循环补发。
+- 运行期读取者关闭：write 报 `EPIPE`（**库保证不因 SIGPIPE 终止宿主
+  进程**）→ 关闭写端并按指数退避重开（同 TCP 退避语义）；重开遇
+  `ENXIO`（读取者尚未回来）或 `ENOENT`（端点文件被移除）停留在重试态。
+- FIFO 满：恒 `O_NONBLOCK`，`EAGAIN` → 丢弃该事件计 `failed`，
+  **不阻塞、不重试**（与 D-S5 恒 discard 精神一致，明示）。阻塞式
+  背压语义 v1 不提供。
+
+**共同**：
+
+- 能力位 `SYNC | ASYNC | LINE_ATOMIC`；`sync` = NULL；`flush` 无操作
+  （合并缓冲逐 emit_batch 排空）；**推荐 `async=on`**；at-most-once；
+  热重载任何私有键变化即销毁重建（连接/写端随之断开重连，§4.10.6）。
+- 发送合并缓冲由 priv 预分配（create 时清零），稳态零 malloc（§4.10.4）。
+- 记账恒等式闭合同 §4.10.8：截断/`EAGAIN`/发送失败/退避窗口内/
+  等待态事件计 `failed`；队列满计 `dropped`（核心累加）。
 
 ---
 
@@ -1286,6 +1360,12 @@ signal reload = false
 # tcp/udp:      host, port（1-65535，必填）；tcp 另有 reconnect backoff / reconnect backoff max，
 #               udp 另有 mtu（网络型 sink，§4.10.8；v1 POSIX 专属，Windows 不可注册；推荐 async=on；
 #               热重载变更任何私有键即断连重建）
+# unix/fifo:    path（必填，**已存在**的 IPC 端点：socket 文件由对端进程创建、FIFO 由使用方
+#               mkfifo；库只 connect/open，从不创建端点。本机 IPC 型 sink §4.10.9，POSIX 专属，
+#               Windows 构建不可注册；推荐 async=on；热重载变更任何私有键即断连重建）
+#               unix 另有 socktype=dgram|stream（默认 dgram）、reconnect backoff / reconnect backoff max
+#               fifo 另有 reconnect backoff / reconnect backoff max；不做 popen——读取进程由
+#               使用方自行启动（附录 A.1 #10）
 # null:         无私有键（丢弃一切；审计/指标下线的路由落点）
 # <自定义类型>:  hpulogc_sink_register 注册的类型（§4.10.5）；未注册类型定义即启动失败
 # ============================================================================
@@ -1303,6 +1383,11 @@ syslog_out   = syslog, facility=user
 # 网络输出示例（v1 POSIX 专属；行帧协议：TCP 每行追加 \n，UDP 每记录一个数据报）：
 net_tcp      = tcp, host=127.0.0.1, port=514, async=on, queue size=1mb, reconnect backoff=1, reconnect backoff max=30
 net_udp      = udp, host=127.0.0.1, port=514, async=on, queue size=1mb, mtu=1472
+
+# 本机 IPC 输出示例（POSIX 专属；端点须已存在——socket 文件由对端进程创建，
+# FIFO 须使用方先 mkfifo 并自行启动读取进程，库不做 popen，附录 A.1 #10）：
+# ipc_unix     = unix, path=/var/run/myapp/log.sock, async=on, queue size=1mb, socktype=dgram
+# ipc_fifo     = fifo, path=/var/run/myapp/log.pipe, async=on, queue size=1mb
 
 # per-sink 字段过滤示例：该 sink 只投递列出的字段（其余字段计入该实例 fields_dropped，§4.10.3）
 metrics_udp  = udp, host=10.0.0.9, port=8125, filter keys="trace_id,user_id"
@@ -1683,7 +1768,7 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 优先级 | 项目 |
 |--------|------|
 | **P0（必须）** | 纯 C 实现、跨平台、线程安全、6 级日志、环形缓冲（有锁）、文件+控制台输出、INI 配置、单元测试、CMake 构建、API 签名、导出符号、错误处理、编译警告、Sanitizer、安装规则、示例、配置解析器行为约束 |
-| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）**、**网络型 sink（TCP/UDP）（§4.10.8）** |
+| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）**、**网络型 sink（TCP/UDP）（§4.10.8）**、**本机 IPC 型 sink（UDS/FIFO）（§4.10.9）** |
 | **P2（增强）** | 彩色输出（Linux 部分随 Phase 1，Windows VT 适配随 Phase 2）、格式定制、包管理器、静态分析、文档生成、移植指南、`hpulogc_strerror` 错误描述 API、**配置校验 `hpulogc_conf_validate` + `hpulogc_chk_conf` CLI（§7.3/§11）** |
 
 ---
@@ -1932,6 +2017,32 @@ per-sink 字段过滤（兑现 §4.10.3 预留，任务来源仓库 todo.md 一 
    当前不做）"（D-R17），消除悬空承诺。
 5. 全文通用键清单（§4.10.2/§4.10.5/§4.10.6/§13.2/附录、§10 示例注释）
    同步加入 `filter keys`；`[outputs]` 示例新增过滤用法。
+
+### v0.6.7（2026-09-30）
+
+本机 IPC 型 sink（任务来源仓库 todo.md 二.11 网络型 sink 第二期，
+任务书 §三.B 语义定案、FIFO 打开语义见决策记录 D-R20）。规范先行增补，
+实现随后：
+
+1. 新增 §4.10.9「本机 IPC 型 sink：unix / fifo」（规范性）：`unix` =
+   Unix domain socket 客户端（`path` 必填、已存在的 socket 文件，库只
+   connect 不创建/绑定；`socktype=dgram|stream` 默认 dgram，stream 同
+   TCP 行帧；start connect 失败 fail-fast，运行期对端重启 → 指数退避
+   重连同 TCP）；`fifo` = 命名管道写端（不做 popen，附录 A.1 #10；恒
+   `O_NONBLOCK`；`ENOENT`/非 FIFO fail-fast 而 ENXIO（无读取者）延迟
+   退避重试不 fail-fast——与 TCP start 语义的差异及理由明示；reader
+   关闭 EPIPE → 重开 + 退避；FIFO 满 EAGAIN 丢弃计 failed，D-S5 精神）；
+   公共语义（caps/at-most-once/记账/热重载/推荐 async=on）沿用
+   §4.10.8 基线；v0.6.7 POSIX-only（Win32 named pipe 列远期独立类型）。
+2. §4.7.1 内置清单追加 `unix`/`fifo` 行；§4.7.2 追加私有键行
+   （`path`/`socktype`/`reconnect backoff`/`reconnect backoff max`）。
+3. §4.7.4 `HPULOGC_SINKS` 默认串更新为
+   `console,rollingfile,syslog,tcp,udp,unix,fifo,null`（Windows 自动移除
+   syslog/tcp/udp/unix/fifo）；§4.8 选项表同步（顺带修正该行此前遗漏的
+   tcp/udp 默认值）；`min` 预设不含 unix/fifo（§5 不变）。
+4. §10.3 配置模板追加 unix/fifo 键位图例与注释形态示例（INI 片段经
+   `hpulogc_chk_conf` 实测）。
+5. §17 P1 行追加「本机 IPC 型 sink（UDS/FIFO）（§4.10.9）」。
 
 ---
 

@@ -142,7 +142,7 @@ cmake --build build && ctest --test-dir build
 -DHPULOGC_C_STANDARD=11             # C11（默认 99）
 -DHPULOGC_ATOMIC_BACKEND=gcc-atomic # 强制原子后端
 -DHPULOGC_SANITIZER=address         # address / thread / undefined / address,undefined
--DHPULOGC_SINKS=console,rollingfile,syslog,tcp,udp,null  # 内置 sink 白名单裁剪（tcp/udp/syslog 为 POSIX 专属）
+-DHPULOGC_SINKS=console,rollingfile,syslog,tcp,udp,unix,fifo,null  # 内置 sink 白名单裁剪（tcp/udp/syslog/unix/fifo 为 POSIX 专属）
 ```
 
 > 并发模式与是否无锁均为**编译期选择**，不可运行时更改；取值非法时
