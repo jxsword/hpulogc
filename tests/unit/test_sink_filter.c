@@ -252,8 +252,20 @@ TEST(filter_async)
     build_cfg(&cfg, sinks, "k1", 1);
     CHECK_EQ(hpulogc_init(&cfg), HPULOGC_OK);
     log_two_fields();
-    /* hpulogc_flush drains the second-level queue (bounded handshake) */
-    CHECK_EQ(hpulogc_flush(), HPULOGC_OK);
+    /* hpulogc_flush only drains the first-level ring; the second-level
+     * queue worker runs asynchronously, so poll (bounded) until the
+     * worker's filtered accounting has landed. */
+    {
+        int i;
+
+        for (i = 0; i < 2000; i++) {
+            CHECK_EQ(hpulogc_get_sink_stats("cap0", &st), HPULOGC_OK);
+            if (st.written == 1 && st.fields_dropped == 1) {
+                break;
+            }
+            hpu_test_sleep_ms(1);
+        }
+    }
 
     CHECK_EQ(hpulogc_get_sink_stats("cap0", &st), HPULOGC_OK);
     CHECK_EQ(st.written, 1);

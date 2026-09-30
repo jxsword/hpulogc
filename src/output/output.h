@@ -16,6 +16,7 @@
 
 #include "hpulogc.h"
 #include "../atomic/hpulogc_atomic.h"
+#include "../platform/platform.h"
 
 /* File-scope forward declaration: the config definition struct lives in
  * conf_model.h; without this, the tag in a parameter list would get
@@ -77,8 +78,13 @@ typedef struct hpu_output_base {
     uint16_t filter_off[HPULOGC_MAX_SINK_FILTER_KEYS]; /*!< Key byte offsets into filter_pool */
     uint8_t filter_len[HPULOGC_MAX_SINK_FILTER_KEYS];  /*!< Key byte counts */
     uint8_t filter_count;            /*!< Whitelist key count (0 = no filter) */
-    uint8_t* filter_wire;            /*!< Filtered wire scratch (single-owner) */
+    uint8_t* filter_wire;            /*!< Filtered wire scratch (sync path;
+                                          guarded by filter_mu) */
     size_t filter_wire_cap;          /*!< Wire scratch capacity */
+    hpu_mutex_t filter_mu;           /*!< Serializes the sync-path scratch:
+                                          async-build consumer threads
+                                          dispatch to sync sinks
+                                          concurrently (§4.10.4) */
 } hpu_output_base_t;
 
 /** @brief Opaque sink handle (hpu_output_base_t at offset 0). */
@@ -222,9 +228,10 @@ void hpu_output_get_stats(hpu_output_t* o, hpulogc_sink_stats_t* out);
  * decoded field array in @p out_fields (borrowed views into @p scratch).
  * The shared producer staging is never touched: @p view must be a
  * caller-owned mutable copy (sync dispatch) or the worker's private
- * decode staging (async). @p scratch is single-owner — the sync dispatch
- * path holds conf_lock and the async worker is per-instance, so call
- * sites are serialized (§4.10.4).
+ * decode staging (async). @p scratch must be serialized by the caller:
+ * the sync dispatch path guards it with the base filter_mu (async-build
+ * consumer threads dispatch to sync sinks concurrently, §4.10.4) and the
+ * async worker is per-instance single-thread.
  *
  * @param b           Instance base (whitelist + scratch owner).
  * @param view        Mutable event view to rewrite.

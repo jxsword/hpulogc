@@ -352,6 +352,13 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         }
         return NULL;
     }
+    if (hpu_mutex_init(&b->filter_mu) != 0) {
+        if (err != NULL) {
+            *err = HPULOGC_ERR_NO_MEM;
+        }
+        free(b);
+        return NULL;
+    }
     b->ops = ops;
     b->fsync_sev = fsync_sev;
     b->use_utc = use_utc;
@@ -406,6 +413,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         if (err != NULL) {
             *err = HPULOGC_ERR_CONFIG;
         }
+        hpu_mutex_destroy(&b->filter_mu);
         free(b->filter_pool);
         free(b);
         return NULL;
@@ -415,6 +423,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         if (err != NULL) {
             *err = HPULOGC_ERR_CONFIG;
         }
+        hpu_mutex_destroy(&b->filter_mu);
         free(b->filter_pool);
         free(b);
         return NULL;
@@ -427,6 +436,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
         if (ops->destroy != NULL) {
             ops->destroy((hpulogc_sink_t*)(void*)b);
         }
+        hpu_mutex_destroy(&b->filter_mu);
         free(b->filter_pool);
         free(b);
         return NULL;
@@ -446,6 +456,7 @@ hpu_output_t* hpu_output_create(const char* type, const hpu_kv_t* kvs,
             if (ops->destroy != NULL) {
                 ops->destroy((hpulogc_sink_t*)(void*)b);
             }
+            hpu_mutex_destroy(&b->filter_mu);
             free(b->filter_pool);
             free(b);
             return NULL;
@@ -460,6 +471,7 @@ config_err:
     if (ops->destroy != NULL) {
         ops->destroy((hpulogc_sink_t*)(void*)b);
     }
+    hpu_mutex_destroy(&b->filter_mu);
     free(b->filter_pool);
     free(b);
     return NULL;
@@ -482,6 +494,7 @@ void hpu_output_close(hpu_output_t* o, uint32_t drain_timeout_ms)
     if (b->ops->destroy != NULL) {
         b->ops->destroy((hpulogc_sink_t*)(void*)o);
     }
+    hpu_mutex_destroy(&b->filter_mu);
     free(b->filter_pool);
     free(b->filter_wire);
     free(o);
@@ -631,13 +644,18 @@ int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
             ev->fields_wire != NULL) {
             /* Sync filtering (§4.7.3): the caller's ev is shared staging
              * across all sinks in the routing loop, so rewrite a stack
-             * copy instead. The base-owned wire scratch is single-owner
-             * here: sync dispatch holds conf_lock (§4.10.4). */
+             * copy instead. The base-owned wire scratch is guarded by
+             * filter_mu: async-build consumer threads dispatch to sync
+             * sinks concurrently (§4.10.4); emit runs outside the lock. */
             hpulogc_event_t view = *ev;
             hpulogc_field_t fscratch[HPULOGC_MAX_FIELDS];
-            size_t removed = hpu_output_filter_apply(
+            size_t removed;
+
+            hpu_mutex_lock(&b->filter_mu);
+            removed = hpu_output_filter_apply(
                     b, &view, fscratch, HPULOGC_MAX_FIELDS, &b->filter_wire,
                     &b->filter_wire_cap);
+            hpu_mutex_unlock(&b->filter_mu);
 
             if (removed > 0) {
                 hpu_at_fetch_add_u64(&b->st_fields, (uint64_t)removed,
