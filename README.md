@@ -11,10 +11,10 @@
 - **异步消费者**线程 + 批量同步落盘（实测 ~5.2M logs/sec @64B，Windows 原生）
 - **INI 配置**（zlog 兼容词法）+ 热加载（inotify / kqueue / ReadDirectoryChangesW，
   SIGHUP 触发，通知不可用时轮询回退）+ 原子替换回滚
-- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、8 类内置
-  sink（console/rollingfile/syslog/tcp/udp/unix/fifo/null，其中网络型
-  tcp/udp 为 v0.6.2 新增、本机 IPC 型 unix/fifo 为 v0.6.7 新增，四者
-  POSIX 专属）、per-sink 异步队列 + 专属
+- **多 Sink 体系**（rd_v0.6）：sink vtable ABI + 进程级注册、9 类内置
+  sink（console/rollingfile/syslog/tcp/udp/unix/fifo/http/null，其中
+  网络型 tcp/udp 为 v0.6.2 新增、本机 IPC 型 unix/fifo 为 v0.6.7 新增、
+  HTTP/Webhook 型 http 为 v0.6.8 新增，五者 POSIX 专属）、per-sink 异步队列 + 专属
   worker 批量写出、结构化字段（typed key=value）与 `%v` 占位符、
   per-sink 统计
 - **路由规则**（类目选择器 × 级别范围，v0.6.4 起支持取反
@@ -143,7 +143,7 @@ cmake --build build && ctest --test-dir build
 -DHPULOGC_C_STANDARD=11             # C11（默认 99）
 -DHPULOGC_ATOMIC_BACKEND=gcc-atomic # 强制原子后端
 -DHPULOGC_SANITIZER=address         # address / thread / undefined / address,undefined
--DHPULOGC_SINKS=console,rollingfile,syslog,tcp,udp,unix,fifo,null  # 内置 sink 白名单裁剪（tcp/udp/syslog/unix/fifo 为 POSIX 专属）
+-DHPULOGC_SINKS=console,rollingfile,syslog,tcp,udp,unix,fifo,http,null  # 内置 sink 白名单裁剪（tcp/udp/syslog/unix/fifo/http 为 POSIX 专属）
 ```
 
 > 并发模式与是否无锁均为**编译期选择**，不可运行时更改；取值非法时
@@ -202,10 +202,11 @@ powershell -ExecutionPolicy Bypass -File scripts\run_matrix.ps1
 
 每个输出实例都是一个 **sink**（vtable 抽象，`hpulogc_sink_ops_t`），
 通过 `[outputs]`（INI）或 `hpulogc_config_t.sinks[]`（代码内，能力对等）
-声明实例；内置 8 类：`console`、`rollingfile`（`file` 为别名）、
+声明实例；内置 9 类：`console`、`rollingfile`（`file` 为别名）、
 `syslog`（POSIX 专属，进程内单实例）、**`tcp` / `udp`**（网络型，v0.6.2
-新增）、**`unix` / `fifo`**（本机 IPC 型，v0.6.7 新增；四者 POSIX 专属，
-Windows 构建不可注册）、`null`。未注册的类型一律 fail-fast。每个实例可选
+新增）、**`unix` / `fifo`**（本机 IPC 型，v0.6.7 新增）、**`http`**
+（HTTP/Webhook 型，v0.6.8 新增；五者 POSIX 专属，Windows 构建不可注册）、
+`null`。未注册的类型一律 fail-fast。每个实例可选
 `async = on` 走 **per-sink 异步投递**：专属有界字节环队列 + 专属
 worker 批量写出，队列满丢弃当前事件并计入该实例的 `dropped`（恒不阻塞
 投递方；`queue size` 支持 64KB~16MB）。
@@ -274,6 +275,29 @@ POSIX 专属，Windows 构建不可注册；同样**推荐 `async = on`**）：
 # 端点须已存在：socket 文件由对端进程创建；FIFO 须先 mkfifo 并自行启动读取进程
 ipc_unix  = unix, path=/var/run/myapp/log.sock, async=on, queue size=1M, socktype=dgram
 ipc_fifo  = fifo, path=/var/run/myapp/log.pipe, async=on, queue size=1M
+```
+
+**HTTP/Webhook 型 sink**（`http`，rd_v0.6 §4.10.10；v0.6.8 起内置，
+POSIX 专属，Windows 构建不可注册；**`async = on` 必需**——async=off
+含缺省即配置失败，HTTP 往返的秒级阻塞面不允许同步投递）：
+
+- 手写 **HTTP/1.1 客户端**（零第三方依赖，§6）：仅明文 `http://`
+  scheme；需要 TLS 时由服务侧前置反代终止（stunnel/nginx 等，D-R21），
+  `https://` 配置即拒绝。
+- 批量：worker 攒批一次 POST；`batch mode = ndjson`（默认，每批一个
+  JSON 数组、一行一事件）或 `lines`（逐行 `text/plain`）；缓冲将满
+  自动拆分为多个 POST，超限行计 `failed` 不截断。
+- 连接：**keep-alive 单连接复用**（响应按 `Content-Length` 有界排空），
+  失效/断开自动按 `reconnect backoff` / `reconnect backoff max`
+  指数退避重连；start 首连失败即 init 失败（fail-fast）。
+- 投递语义 **at-most-once**：3xx/4xx/5xx、超时、连接失败计 `failed`
+  且**不重试**（重试语义留契约 v2）；`timeout ms`（默认 1000，不含
+  connect 阶段）约束单次请求；认证等经 `header`（可重复，≤8 个）。
+
+```ini
+[outputs]
+# 明文 POST；TLS 需求由服务侧前置反代终止（stunnel/nginx）
+web_hook  = http, url=http://collector.internal:18080/logs, async=on, queue size=1M, batch mode=ndjson, timeout ms=1000, header="Authorization: Bearer <token>"
 ```
 
 **结构化字段**（`HPULOGC_*_EX` 宏族，I64/U64/F64/BOOL/STR 五类值，
