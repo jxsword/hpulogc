@@ -535,7 +535,7 @@ size_t hpu_output_filter_apply(const hpu_output_base_t* b,
 {
     const uint8_t* wire = view->fields_wire;
     size_t len = view->fields_len;
-    uint16_t count = view->field_count;
+    uint16_t count = (uint16_t)view->field_count;
     size_t off;
     size_t wlen;
     size_t removed;
@@ -640,6 +640,13 @@ int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
             return -1;
         }
     } else {
+        /* Filtered view + decode row: declared here (not inside the if)
+         * because emit below reads them — asan flags use-after-scope
+         * when the narrowed scopes exit before the call. */
+        hpulogc_event_t view;
+        hpulogc_field_t fscratch[HPULOGC_MAX_FIELDS];
+        int use_view = 0;
+
         if (b->filter_count > 0 && ev->field_count > 0 &&
             ev->fields_wire != NULL) {
             /* Sync filtering (§4.7.3): the caller's ev is shared staging
@@ -647,10 +654,9 @@ int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
              * copy instead. The base-owned wire scratch is guarded by
              * filter_mu: async-build consumer threads dispatch to sync
              * sinks concurrently (§4.10.4); emit runs outside the lock. */
-            hpulogc_event_t view = *ev;
-            hpulogc_field_t fscratch[HPULOGC_MAX_FIELDS];
             size_t removed;
 
+            view = *ev;
             hpu_mutex_lock(&b->filter_mu);
             removed = hpu_output_filter_apply(
                     b, &view, fscratch, HPULOGC_MAX_FIELDS, &b->filter_wire,
@@ -660,10 +666,10 @@ int hpu_output_deliver(hpu_output_t* o, const hpulogc_event_t* ev)
             if (removed > 0) {
                 hpu_at_fetch_add_u64(&b->st_fields, (uint64_t)removed,
                                      HPU_MO_RELAXED);
-                ev = &view;
+                use_view = 1;
             }
         }
-        b->ops->emit((hpulogc_sink_t*)(void*)o, ev);
+        b->ops->emit((hpulogc_sink_t*)(void*)o, use_view ? &view : ev);
     }
     hpu_at_fetch_add_u64(&b->st_written, 1, HPU_MO_RELAXED);
     hpu_at_fetch_add_u64(&b->st_bytes, (uint64_t)ev->line_len,
