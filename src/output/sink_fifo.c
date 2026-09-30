@@ -14,8 +14,9 @@
  * closing mid-run surfaces as EPIPE and reopens with backoff. The FIFO
  * is never allowed to block the caller: EAGAIN (pipe full) discards the
  * record with failed accounting (D-S5 spirit). SIGPIPE is suppressed
- * per write via a thread-local signal mask, never by changing the
- * process-wide disposition.
+ * around each write (thread-local mask, plus a Darwin-specific SIG_IGN
+ * window — see fifo_write_record) without leaving any lasting change to
+ * the process-wide signal disposition.
  */
 
 #include "output.h"
@@ -222,8 +223,16 @@ static int fifo_try_reopen(hpu_fifo_priv_t* p)
 }
 
 /**
- * @brief Write one record with SIGPIPE suppressed via a thread-local
- *        signal mask (never a process-wide disposition change).
+ * @brief Write one record with SIGPIPE suppressed.
+ *
+ * Linux (and POSIX thread-directed delivery): block SIGPIPE on the
+ * writing thread via pthread_sigmask and consume the pending signal
+ * before restoring. Darwin posts SIGPIPE to the *process* (psignal
+ * picks any thread that does not block it), so masking the writer is
+ * not enough there — temporarily set SIG_IGN for the duration of the
+ * write instead. The window covers exactly one write(): an application
+ * write inside the window still gets EPIPE, it only loses the signal
+ * notification; the previous disposition is restored right after.
  *
  * @return 0 fully written, 1 transient (EAGAIN: nothing or a torn
  *         partial for records larger than PIPE_BUF made it in; the
@@ -232,16 +241,27 @@ static int fifo_try_reopen(hpu_fifo_priv_t* p)
  */
 static int fifo_write_record(hpu_fifo_priv_t* p, size_t len)
 {
-    sigset_t block;
-    sigset_t old;
     size_t off = 0;
     int rc = 0;
+#if defined(__APPLE__)
+    struct sigaction ign;
+    struct sigaction old;
+
+    memset(&ign, 0, sizeof(ign));
+    ign.sa_handler = SIG_IGN;
+    if (sigaction(SIGPIPE, &ign, &old) != 0) {
+        return -1;
+    }
+#else
+    sigset_t block;
+    sigset_t old;
 
     sigemptyset(&block);
     sigaddset(&block, SIGPIPE);
     if (pthread_sigmask(SIG_BLOCK, &block, &old) != 0) {
         return -1;
     }
+#endif
     while (off < len) {
         ssize_t n = write(p->fd, p->stage + off, len - off);
 
@@ -258,6 +278,9 @@ static int fifo_write_record(hpu_fifo_priv_t* p, size_t len)
         }
         off += (size_t)n;
     }
+#if defined(__APPLE__)
+    (void)sigaction(SIGPIPE, &old, NULL);
+#else
     /* A SIGPIPE raised by the writes above is pending for this thread:
      * consume it before restoring the mask, otherwise the restore
      * delivers it with the default disposition and kills the host
@@ -277,6 +300,7 @@ static int fifo_write_record(hpu_fifo_priv_t* p, size_t len)
         }
     }
     pthread_sigmask(SIG_SETMASK, &old, NULL);
+#endif
     return rc;
 }
 
