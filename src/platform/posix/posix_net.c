@@ -147,6 +147,43 @@ void hpu_net_close(int fd)
     }
 }
 
+int hpu_net_set_timeout(int fd, int send_ms, int recv_ms)
+{
+    /* SO_SNDTIMEO/SO_RCVTIMEO take a struct timeval; a zero timeout
+     * means "unbounded" for that direction (0 passed through as-is). */
+    struct timeval so;
+    struct timeval ro;
+
+    so.tv_sec = send_ms / 1000;
+    so.tv_usec = (send_ms % 1000) * 1000;
+    ro.tv_sec = recv_ms / 1000;
+    ro.tv_usec = (recv_ms % 1000) * 1000;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &so, sizeof(so)) != 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &ro, sizeof(ro)) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int hpu_net_recv(int fd, void* buf, size_t cap)
+{
+    ssize_t n;
+
+    if (cap == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    do {
+        n = recv(fd, buf, cap, 0);
+    } while (n < 0 && errno == EINTR);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* SO_RCVTIMEO expiry surfaces as EAGAIN/EWOULDBLOCK on POSIX;
+         * unify to ETIMEDOUT so the sink shares one timeout signal. */
+        errno = ETIMEDOUT;
+    }
+    return (int)n;
+}
+
 int hpu_net_unix_stream_open(const char* path)
 {
     struct sockaddr_un sa;

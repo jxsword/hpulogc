@@ -67,9 +67,9 @@ option(HPULOGC_ENABLE_CATEGORY    "Category routing + per-category levels" ON)
 option(HPULOGC_ENABLE_THROTTLE    "Rate limiting and sampling" OFF)
 option(HPULOGC_ENABLE_SOURCE_LOC  "Capture __FILE__/__LINE__" ON)
 option(HPULOGC_LOCKFREE           "Lock-free ring buffer (else locked)" OFF)
-set(HPULOGC_SINKS "console,rollingfile,syslog,tcp,udp,unix,fifo,null" CACHE STRING
-    "Built-in sink whitelist: console,rollingfile always on; syslog/tcp/udp/unix/fifo/null\
-can be trimmed (rd_v0.6 §4.7.4); syslog/tcp/udp/unix/fifo are POSIX-only")
+set(HPULOGC_SINKS "console,rollingfile,syslog,tcp,udp,unix,fifo,http,null" CACHE STRING
+    "Built-in sink whitelist: console,rollingfile always on; syslog/tcp/udp/unix/fifo/http/null\
+can be trimmed (rd_v0.6 §4.7.4); syslog/tcp/udp/unix/fifo/http are POSIX-only")
 set(HPULOGC_CONCURRENCY "MPSC" CACHE STRING
     "Concurrency mode: SPSC | MPSC | MPMC")
 set(HPULOGC_COMPILE_TIME_LEVEL "TRACE" CACHE STRING
@@ -286,10 +286,10 @@ endif()
 string(REPLACE "," ";" HPULOGC_SINKS_LIST "${HPULOGC_SINKS}")
 foreach(sink IN LISTS HPULOGC_SINKS_LIST)
     string(TOUPPER "${sink}" sink_uc)
-    if(NOT sink_uc MATCHES "^(CONSOLE|ROLLINGFILE|SYSLOG|NULL|TCP|UDP|UNIX|FIFO)$")
+    if(NOT sink_uc MATCHES "^(CONSOLE|ROLLINGFILE|SYSLOG|NULL|TCP|UDP|UNIX|FIFO|HTTP)$")
         message(FATAL_ERROR
             "HPULOGC_SINKS: unknown sink type '${sink}' (allowed: "
-            "console, rollingfile, syslog, tcp, udp, unix, fifo, null)")
+            "console, rollingfile, syslog, tcp, udp, unix, fifo, http, null)")
     endif()
     if(sink_uc STREQUAL "NULL")
         list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_NULL=1)
@@ -309,6 +309,9 @@ foreach(sink IN LISTS HPULOGC_SINKS_LIST)
     if(sink_uc STREQUAL "FIFO")
         set(HPULOGC_SINK_FIFO_WANTED 1)
     endif()
+    if(sink_uc STREQUAL "HTTP")
+        set(HPULOGC_SINK_HTTP_WANTED 1)
+    endif()
 endforeach()
 if(NOT WIN32 AND HPULOGC_SINK_SYSLOG_WANTED)
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_SYSLOG=1)
@@ -327,6 +330,11 @@ if(NOT WIN32 AND HPULOGC_SINK_UNIX_WANTED)
 endif()
 if(NOT WIN32 AND HPULOGC_SINK_FIFO_WANTED)
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_FIFO=1)
+endif()
+# HTTP sink (rd_v0.6 §4.10.10): POSIX-only in v1 (hand-written HTTP/1.1
+# over hpu_net), like syslog/tcp/udp.
+if(NOT WIN32 AND HPULOGC_SINK_HTTP_WANTED)
+    list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_SINK_HTTP=1)
 endif()
 if(HPULOGC_CONCURRENCY_UC STREQUAL "SPSC")
     list(APPEND HPULOGC_PRIVATE_DEFINES HPULOGC_CONCURRENCY_SPSC=1)
@@ -486,6 +494,9 @@ if(NOT WIN32 AND HPULOGC_SINK_UNIX_WANTED)
 endif()
 if(NOT WIN32 AND HPULOGC_SINK_FIFO_WANTED)
     list(APPEND HPULOGC_CORE_SOURCES src/output/sink_fifo.c)
+endif()
+if(NOT WIN32 AND HPULOGC_SINK_HTTP_WANTED)
+    list(APPEND HPULOGC_CORE_SOURCES src/output/sink_http.c)
 endif()
 
 if(NOT HPULOGC_ENABLE_INI)

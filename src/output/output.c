@@ -120,6 +120,9 @@ void hpu_sink_registry_init(void)
 #if defined(HPULOGC_SINK_FIFO)
     g_types[g_type_count++] = hpu_fifo_sink_ops();
 #endif
+#if defined(HPULOGC_SINK_HTTP)
+    g_types[g_type_count++] = hpu_http_sink_ops();
+#endif
 }
 
 void hpu_sink_registry_freeze(void)

@@ -143,4 +143,38 @@ int hpu_net_unix_dgram_open(const char* path);
  */
 void hpu_net_close(int fd);
 
+/**
+ * @brief Set send/receive timeouts on a connected stream socket (v0.6.8,
+ *        rd_v0.6 §4.10.10).
+ *
+ * Bounded request I/O for the HTTP sink: after this call, a send() or
+ * recv() that cannot progress within the respective timeout fails with
+ * errno = ETIMEDOUT (contract-mapped; see hpu_net_recv()). Pass 0 to
+ * leave a direction unbounded.
+ *
+ * @param fd       Socket descriptor.
+ * @param send_ms  Send timeout in milliseconds (0 = unbounded).
+ * @param recv_ms  Receive timeout in milliseconds (0 = unbounded).
+ * @return         0 on success, -1 on failure (errno set).
+ */
+int hpu_net_set_timeout(int fd, int send_ms, int recv_ms);
+
+/**
+ * @brief Receive up to @p cap bytes from a connected stream socket
+ *        (single call, v0.6.8, rd_v0.6 §4.10.10).
+ *
+ * One recv() attempt; EINTR is retried transparently. The timeout armed
+ * by hpu_net_set_timeout() applies. The HTTP sink composes response
+ * reads (status line, headers, bounded body drain) from this primitive.
+ *
+ * @param fd   Socket descriptor.
+ * @param buf  Destination buffer.
+ * @param cap  Buffer capacity in bytes.
+ * @return     Number of bytes received (> 0), 0 when the peer performed
+ *             an orderly shutdown, -1 on failure with errno set; a
+ *             timeout that expired without data is reported as
+ *             errno = ETIMEDOUT (contract-unified across backends).
+ */
+int hpu_net_recv(int fd, void* buf, size_t cap);
+
 #endif /* HPU_NET_H */
