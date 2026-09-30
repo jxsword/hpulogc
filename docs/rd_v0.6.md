@@ -180,7 +180,7 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 |------|------|
 | 配置格式 | INI 风格（zlog conf 兼容词法，§10.1），解析器完全内置，无外部依赖 |
 | 风格 | 词法与解析参考 zlog conf.c 的实现；支持 categories、rules、formats（§10） |
-| 可扩展性 | 预留接口，后续支持 JSON/YAML |
+| 可扩展性 | 可选扩展方向（无排期，当前不做，v0.6.6 修订 D-R17）：JSON/YAML；现行仅 INI 风格 |
 | 校验 | 解析失败**拒绝启动**，返回 `HPULOGC_ERR_CONFIG` + 行号 |
 | 热加载 | 编译期 `HPULOGC_ENABLE_HOT_RELOAD=ON` 时支持；Linux 优先 inotify，macOS 优先 kqueue，Windows 优先 `ReadDirectoryChangesW`（父目录 + 文件名过滤 + mtime/size 快照确认）；SIGHUP 触发需 `signal reload = true`（库安装 handler，默认关闭，§10.3）；通知机制不可用时，按 `hot reload interval`（秒）轮询文件 mtime/大小回退。热加载生效范围见 §10.5 |
 | 多 Category | 编译期 `HPULOGC_ENABLE_CATEGORY=ON` 时支持 |
@@ -278,9 +278,11 @@ sink 的**私有键**（逐项交给 `configure`）：
 | `enabled` | 实例是否启用 | `true` | `false` 的实例**照常建立并打开资源（create→start 生命周期完整执行），事件在 deliver 层门禁处丢弃（不写出、不计入该实例任何统计）**；热重载可翻转（翻转即时生效、无需重开资源——资源常开正是其基础） |
 | `async` | 是否异步投递 | `off` | `on` 时该实例获得第二级队列 + 专属 worker（§4.10.6）；任意构建可用（含同步构建） |
 | `queue size` | 第二级队列字节容量 | 256KB（支持尺寸后缀） | 范围 64KB–16MB；仅 `async=on` 时有效，`async=off` 时给出该键为无害（告警忽略，lenient） |
+| `filter keys`（v0.6.6 新增） | 结构化字段白名单（逗号分隔字段名）：投递到该实例的事件只保留列出的字段 | 空（不过滤，全部字段照常投递） | 值为逗号分隔的字段名列表，`[outputs]` 行内场景含逗号须双引号包裹（§10.1），如 `filter keys="trace_id,user_id"`；列表可为空串 = 不过滤；只作用于**结构化字段区**（`fields`），格式串渲染的整行（`line`/`line_len`）不受影响；被滤除的字段逐个计入该实例 `fields_dropped`（§4.10.3），不影响全局 `fields_dropped`（§4.11.2）；匹配按字段名精确比较（区分大小写），同名重复字段同进同出 |
 
-- 通用键的值非法（如 `enabled=maybe`、`queue size` 越界）视同未知键：
-  按 `strict init` 成败。
+- 通用键的值非法（如 `enabled=maybe`、`queue size` 越界、`filter keys`
+  超 `HPULOGC_MAX_SINK_FILTER_KEYS`（默认 8，公共可覆盖宏）项）视同
+  未知键：按 `strict init` 成败。
 - `async=on` + 恒 discard 溢出（§4.10.6）：**per-sink 异步投递不保证不丢**；
   需要不丢的场景使用 `async=off`（同步直写，受 reopen-once/lost 记账保护）。
 
@@ -414,7 +416,7 @@ create -> configure* -> init -> start -> emit / emit_batch* -> flush -> destroy
 | 阶段 | 调用方/时机 | 语义 |
 |------|-------------|------|
 | `create` | 核心；实例定义解析后 | 分配实例本体与清零的私有数据（`priv_size`）；失败 → `HPULOGC_ERR_NO_MEM` |
-| `configure` | 核心；解析期逐键 | 灌入私有配置；**通用键（enabled/async/queue size）已被核心先行消费**；未识别键返回非 0 → strict 成败 / lenient 告警忽略；解析期校验错误使 init 失败 `HPULOGC_ERR_CONFIG` |
+| `configure` | 核心；解析期逐键 | 灌入私有配置；**通用键（enabled/async/queue size/filter keys）已被核心先行消费**；未识别键返回非 0 → strict 成败 / lenient 告警忽略；解析期校验错误使 init 失败 `HPULOGC_ERR_CONFIG` |
 | `init` | 核心；**全部 configure 之后**、首次 emit 前，一次 | 默认填充与资源预检。**警告**：`init` 内只能写 `if (p->field == 0) p->field = default;` 形式的默认值填充，不得无条件赋值（会清掉 configure 灌入的值）；失败 → 该实例启动失败，init 整体失败 `HPULOGC_ERR_CONFIG` |
 | `start` | 核心；init 后 | 打开真实资源（文件/连接）；可为 NULL（init 已含打开）；失败 → `HPULOGC_ERR_IO`（fail-fast，沿用 rollingfile 打开语义） |
 | `emit` / `emit_batch` | 投递路径（§4.10.4/§4.10.6） | 写出事件；`emit` 不得返回失败，失败通过 per-sink 统计暴露（§4.10.3） |
@@ -439,7 +441,7 @@ typedef struct {
     unsigned long long written;        /*!< 该 sink 已成功投递（含入缓冲）的记录数 */
     unsigned long long dropped;        /*!< 投递到该 sink 前被丢弃的记录数（队列满 / 异步背压） */
     unsigned long long failed;         /*!< 写失败（含重试后仍失败）的记录数 */
-    unsigned long long fields_dropped; /*!< 被丢弃/截断的结构化字段数（§4.11.2 三成因） */
+    unsigned long long fields_dropped; /*!< 因 per-sink 过滤（§4.7.3 filter keys）被滤除的结构化字段数 */
     unsigned long long bytes_written;  /*!< 累计写出字节数（按事件行字节数累计） */
 } hpulogc_sink_stats_t;
 ```
@@ -450,11 +452,14 @@ typedef struct {
   的 lost 计数平移为 failed）；核心在 sink 关闭/替换时把未决 failed 并入
   全局 `retired_lost`（决策 16 迁移通道），保证全局统计恒等式闭合：
   `accepted = written + dropped + overwritten + throttled + 在途`。
-- `fields_dropped`：字段丢弃发生在**生产端**（§4.11.2，与 sink 无关——同一条
-  事件的字段裁剪对所有路由目标一致），因此该计数进入**全局统计**
-  （`hpulogc_stats_t` 追加 `fields_dropped` 字段，append-only ABI）；
-  per-sink 统计中的 `fields_dropped` 字段保留、恒 0（为未来 per-sink
-  字段过滤预留）。公共 API `hpulogc_get_sink_stats(name, &stats)` 读取
+- `fields_dropped`（v0.6.6 修订，D-R14——原"恒 0 预留"条款自本版起
+  兑现）：记录**因该实例 `filter keys` 白名单（§4.7.3）被滤除**
+  的结构化字段数（每实例独立，逐字段 +1；过滤发生在该实例的投递路径，
+  不影响其他实例）。与全局 `fields_dropped`（`hpulogc_stats_t`，
+  §4.11.2 生产端三成因：超字段数/截断/超预算——与 sink 无关，append-only
+  ABI）**正交，不重复计数**：同一条事件可同时发生生产端预算裁剪（进
+  全局）与 per-sink 白名单过滤（进该实例）。未配置 `filter keys` 的
+  实例恒 0。公共 API `hpulogc_get_sink_stats(name, &stats)` 读取
   实例统计；`name` 未定义或未初始化 → `HPULOGC_ERR_INVALID_ARG` /
   `HPULOGC_ERR_STATE`。
 
@@ -487,7 +492,7 @@ typedef struct {
   依赖定位一致，附录 A.1-10 的 record 回调形态由本契约覆盖）。
 - **代码内配置**：`hpulogc_config_t.sinks[]`（`hpulogc_sink_decl_t`，§5）
   与 INI `[outputs]` 行内定义同构；键值对逐项经 `configure` 灌入，通用键
-  （enabled/async/queue size）由核心先行消费。`sinks` 与 `outputs`（垫片）
+  （enabled/async/queue size/filter keys）由核心先行消费。`sinks` 与 `outputs`（垫片）
   可混用，实例名合计受 `HPULOGC_MAX_SINKS` 约束；与 `[outputs]`（INI）或
   彼此重名 → init 失败 `HPULOGC_ERR_CONFIG`。
 - **实现约束**（重申 §4.10.4）：回调内禁止调用除 `hpulogc_sink_*` 外的库
@@ -516,7 +521,7 @@ typedef struct {
   → worker flush → join 全部 worker（有界，超时按现行为继续销毁）→
   sink destroy。顺序上 async worker 先于消费者线程汇合点之前停止接收，
   保证已入队事件被处理。
-- **热重载**：实例的 type/enabled/async/queue size 或任何私有键变化 →
+- **热重载**：实例的 type/enabled/async/queue size/filter keys 或任何私有键变化 →
   该实例**销毁重建**（worker 停止→排空→flush→destroy→新建）；rollingfile
   满足「path + 全参数相等」且 async 属性不变 → 复用现 fd（现行
   reuse_old_idx 语义平移）；console/syslog/null 一律重建（廉价且无状态）。
@@ -672,6 +677,12 @@ typedef struct hpulogc_event {
 预算检查发生在**生产端、入环之前**（与 §4.9④ 同层），保证环内记录恒满足
 预算（「任何单条记录必能入环」不变式的 `max_record_size` 公式相应扩展，
 见 §4.11.4）。
+
+本节三成因只进**全局**统计（v0.6.6 增补，D-R14）；per-sink
+`fields_dropped`（§4.10.3）只记
+因该实例 `filter keys` 白名单（§4.7.3）被滤除的字段，二者正交、不重复
+计数：同一事件可先受生产端预算裁剪（进全局），再被某 sink 实例按白名单
+滤除（进该实例）。
 
 #### 4.11.3 生产端 API（规范性）
 
@@ -1265,7 +1276,8 @@ signal reload = false
 # [outputs] 输出目标定义
 # ============================================================================
 # 行内参数为逗号分隔的 key=value，值可用双引号包裹（含空格、逗号、等号的值）。
-# 通用键（所有类型，核心消费）：enabled=true|false, async=on|off, queue size=<size>（§4.7.3）
+# 通用键（所有类型，核心消费）：enabled=true|false, async=on|off, queue size=<size>,
+#               filter keys=<逗号分隔字段名白名单>（§4.7.3；行内含逗号须双引号包裹）
 # console:      stream=stdout|stderr, color=true|false
 # rollingfile:  path, rotate=none|size|time|both, max size, time unit=hour|day|week|month,
 #               max files, fsync, symlink latest, rotate naming, file perms, dir perms
@@ -1291,6 +1303,9 @@ syslog_out   = syslog, facility=user
 # 网络输出示例（v1 POSIX 专属；行帧协议：TCP 每行追加 \n，UDP 每记录一个数据报）：
 net_tcp      = tcp, host=127.0.0.1, port=514, async=on, queue size=1mb, reconnect backoff=1, reconnect backoff max=30
 net_udp      = udp, host=127.0.0.1, port=514, async=on, queue size=1mb, mtu=1472
+
+# per-sink 字段过滤示例：该 sink 只投递列出的字段（其余字段计入该实例 fields_dropped，§4.10.3）
+metrics_udp  = udp, host=10.0.0.9, port=8125, filter keys="trace_id,user_id"
 
 # 异步投递示例：慢 sink 隔离（队列满丢弃该 sink 的事件，不阻塞其他 sink，§4.10.6）
 net_sink     = rollingfile, path=/var/log/myapp/net.log, async=on, queue size=1mb
@@ -1547,7 +1562,7 @@ stats output = stderr
   - 缓冲区满/空、配置错误/缺失、磁盘满/只读
   - 溢出策略（discard/overwrite/wait）行为与 `dropped`/`overwritten`/`throttled` 计数正确性
   - 高频并发、fork() 子进程（reinit 惰性重建/disable/inherit）、热加载非法配置、热加载 output 增删、SIGHUP 触发热加载、json 格式输出合法性校验
-  - 多 sink 路由与 `file` 别名、未注册类型 fail-fast、通用键 enabled/async/queue size、per-sink 异步（队列丢弃计数/flush 与 shutdown 排空/慢 worker 隔离）、MPMC × 多 sink 并发、sink 统计恒等式（§4.10.3）
+  - 多 sink 路由与 `file` 别名、未注册类型 fail-fast、通用键 enabled/async/queue size/filter keys、per-sink 异步（队列丢弃计数/flush 与 shutdown 排空/慢 worker 隔离）、MPMC × 多 sink 并发、sink 统计恒等式（§4.10.3）
 
 ### 13.3 性能测试
 
@@ -1696,8 +1711,8 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 9 | MDC | 每线程 MDC（put/get/remove + `%M(key)` 占位符） | 无 | **建议不引入**（异步模式下 MDC 属生产者线程上下文，跨线程传递语义复杂；请求级上下文建议调用方自行并入 `%msg`） | **已决策：不采纳**（见 A.2 #7） |
 | 10 | record / syslog / pipe 输出 | `$record` 回调、`>syslog[,facility]`（级别映射）、`\|pipe`（popen） | v0.6：syslog 已作为内置 sink 引入（§4.7.1，单实例限制）；record 回调由 **sink 契约**（§4.10.5）覆盖（自定义 sink 可对接任意收集系统）；pipe 不引入（popen 子进程管理复杂） | **已决策（v0.6）**：syslog 内置、record 语义由自定义 sink 承载、pipe 不引入 | 已决策 |
 | 11 | 轮转归档命名 | `#r` 滚动重编号（logrotate 风格级联）/ `#s` 序号递增，支持零填充宽度（`#2s`），归档路径可含时间占位符 | `{base}`/`{timestamp}`/`{index}` 模板 + `max files` 清理 + `.latest` 软链（§4.6） | 本文模板更灵活可控；`rotate naming` 仅用 `{index}`（不含 `{timestamp}`）即等效 `#s` 序号风格，§4.6 已说明该等效性，无需新增机制 | **已采纳（等效性结论维持，Phase 1 已落地 `{index}` 模板；无需新增机制）** |
-| 12 | 双映射环形缓冲 | 异步消费者用 `memfd_create` + 两次 `MAP_FIXED` 双映射环形页，跨边界记录单次连续 memcpy；per-record RESERVED/COMMITTED 原子标志（Linux 专属，zlog 因 memfd 未支持 Windows） | 未规定无锁实现细节 | 可作为 Phase 1 Linux 无锁 SPSC 的**可选优化**；必须保留 macOS/Windows 通用回退（尾部分段拷贝）；因跨平台实现分叉，列为可选优化而非规范 | **已决策：采纳（可选优化，Linux memfd 专属 + 跨平台回退保留）**，排期见 todo.md（远期） |
-| 13 | shutdown/热加载线程协同 | flush/退出经队列内命令记录 + 消费者完成握手；生产者 per-thread 状态引用计数延迟释放（消费者处理完最后一条后才释放）；注：其退出路径存在忙等缺陷，近期多个修复围绕这些缝隙 | §7.5/§10.5 定义了行为，未规定机制 | **建议采纳**为实现要求（命令记录 + 条件变量握手 + 引用计数延迟释放；用条件变量而非 zlog 式忙等） | **已决策：采纳（作为健壮性强化；现条件变量机制已满足行为定义）**，排期见 todo.md |
+| 12 | 双映射环形缓冲 | 异步消费者用 `memfd_create` + 两次 `MAP_FIXED` 双映射环形页，跨边界记录单次连续 memcpy；per-record RESERVED/COMMITTED 原子标志（Linux 专属，zlog 因 memfd 未支持 Windows） | 未规定无锁实现细节（无锁环以 PAD 记录保证记录连续：跨界时发布 `HPU_REC_FLAG_PAD` 记录回到头部写入，生产/消费均单次 memcpy，§4.11.4 同构） | 原评估假设存在跨边界双拷贝成本；实现复核证实现方案已消除该成本，双映射环唯一增益为省去 PAD 记录的微量空间 | **已决策：采纳（可选优化，Linux memfd 专属 + 跨平台回退保留）**；**v0.6.6 复核改判：不采纳（D-R16）——优化对象（跨边界双拷贝）在现实现中不存在** |
+| 13 | shutdown/热加载线程协同 | flush/退出经队列内命令记录 + 消费者完成握手；生产者 per-thread 状态引用计数延迟释放（消费者处理完最后一条后才释放）；注：其退出路径存在忙等缺陷，近期多个修复围绕这些缝隙 | §7.5/§10.5 定义了行为，未规定机制 | **建议采纳**为实现要求（命令记录 + 条件变量握手 + 引用计数延迟释放；用条件变量而非 zlog 式忙等） | **已决策：采纳（作为健壮性强化；现条件变量机制已满足行为定义）**；**排期降级（D-R15）**：24h 压测归档后由后续会话排期，避免在压测收尾前改动 shutdown 路径 |
 | 14 | per-thread 缓冲增长策略 | 每线程缓冲 1KB 起步、按增量增长（全局可配 `buffer min`/`buffer max`，默认上限 2MB），不缩减，稳态零 malloc；`buffer max=0` 为无上限 | `max log length`（默认 4KB）硬截断（§9）；v0.2 已定义生产者渲染上限 = `max log length` | **建议组合**：预分配 + 按需增长至 `max log length` 上限即截断（与 §9 渲染上限条款方向一致，兼得稳态零 malloc 与硬上限；避免 zlog 无上限模式的内存风险）；采纳与否仅影响 per-thread 缓冲增长策略实现 | **已采纳**（落地于 Phase 1：`tls_ensure` TLS 缓冲按需增长至上限） |
 
 ### A.2 明确不采纳项（本文方案更优，记录结论）
@@ -1774,7 +1789,7 @@ docs/decision_log.md D-S1..S7）**：
 
 6. §4.7 重写：输出目标统一为 sink（类型 + 实例）；内置清单
    console/rollingfile（`file` 别名）/syslog/null；`HPULOGC_SINKS` 裁剪
-   白名单；实例通用键 enabled/async/queue size（§4.7.3）。
+   白名单；实例通用键 enabled/async/queue size/filter keys（§4.7.3）。
 7. 新增 §4.10 sink 契约：vtable ABI（`HPULOGC_SINK_ABI_VERSION=1`，含
    sync 回调与 reserved[4] 扩展槽）、生命周期、线程模型（实例级回调
    串行化）、per-sink 统计与全局恒等式闭合（§4.10.3）、注册 API 与代码内
@@ -1893,6 +1908,30 @@ docs/decision_log.md D-S1..S7）**：
    与节流检测共用同一重开路径并同步刷新记账，不叠加重开预算；Windows 平台
    文件按共享模式打开（READ|WRITE|DELETE），使外部替换在句柄持有期间可行。
 5. 附录 A.1 #5 状态更新为已落地 v0.6.5。
+
+---
+
+### v0.6.6（2026-09-30）
+
+per-sink 字段过滤（兑现 §4.10.3 预留，任务来源仓库 todo.md 一 P3，
+会话 5 定案 D-R14）+ JSON/YAML 预留措辞降级（D-R17）。规范先行增补，
+实现随后：
+
+1. §4.7.3 通用键表新增 `filter keys`（规范性，v0.6.6）：结构化字段
+   白名单，逗号分隔字段名，行内场景含逗号须双引号包裹（§10.1）；
+   只作用于结构化字段区，格式串整行不受影响；值非法（超
+   `HPULOGC_MAX_SINK_FILTER_KEYS`，默认 8，公共可覆盖宏）按
+   `strict init` 成败；热重载变更该键 → 实例销毁重建（随通用键
+   现有语义）。
+2. §4.10.3 `fields_dropped` 记账语义修订（规范性）：由"保留恒 0"改为
+   记录**因该实例白名单被滤除的字段数**；与全局 `fields_dropped`
+   （§4.11.2 生产端三成因）正交、不重复计数；未配置过滤的实例恒 0。
+3. §4.11.2 增补正交性注记（规范性）：三成因只进全局统计，per-sink
+   过滤计数独立。
+4. §4.5 JSON/YAML 由"预留接口，后续支持"降为"可选扩展方向（无排期，
+   当前不做）"（D-R17），消除悬空承诺。
+5. 全文通用键清单（§4.10.2/§4.10.5/§4.10.6/§13.2/附录、§10 示例注释）
+   同步加入 `filter keys`；`[outputs]` 示例新增过滤用法。
 
 ---
 

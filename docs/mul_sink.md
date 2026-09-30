@@ -111,9 +111,11 @@ sink 的**私有键**（逐项交给 `configure`）：
 | `enabled` | 实例是否启用 | `true` | `false` 的实例**不打开、不参与路由**；热重载可翻转（翻转即时生效，不需要重开资源） |
 | `async` | 是否异步投递 | `off` | `on` 时该实例获得第二级队列 + 专属 worker（§4.10.6）；任意构建可用（含同步构建） |
 | `queue size` | 第二级队列字节容量 | 256KB（支持尺寸后缀） | 范围 64KB–16MB；仅 `async=on` 时有效，`async=off` 时给出该键为无害（告警忽略，lenient） |
+| `filter keys` | 结构化字段白名单（逗号分隔字段名）：投递到该实例的事件只保留列出的字段 | 空（不过滤） | 行内含逗号须双引号包裹；只作用于结构化字段区，格式串整行不受影响；被滤除字段计入该实例 `fields_dropped`（§3.3） |
 
-- 通用键的值非法（如 `enabled=maybe`、`queue size` 越界）视同未知键：
-  按 `strict init` 成败。
+- 通用键的值非法（如 `enabled=maybe`、`queue size` 越界、`filter keys`
+  超 `HPULOGC_MAX_SINK_FILTER_KEYS`（默认 8，公共可覆盖宏）项）视同
+  未知键：按 `strict init` 成败。
 - `async=on` + 恒 discard 溢出（§4.10.6）：**per-sink 异步投递不保证不丢**；
   需要不丢的场景使用 `async=off`（同步直写，受 reopen-once/lost 记账保护）。
 
@@ -196,7 +198,7 @@ create -> configure* -> init -> start -> emit / emit_batch* -> flush -> destroy
 | 阶段 | 调用方/时机 | 语义 |
 |------|-------------|------|
 | `create` | 核心；实例定义解析后 | 分配实例本体与清零的私有数据（`priv_size`）；失败 → `HPULOGC_ERR_NO_MEM` |
-| `configure` | 核心；解析期逐键 | 灌入私有配置；**通用键（enabled/async/queue size）已被核心先行消费**；未识别键返回非 0 → strict 成败 / lenient 告警忽略；解析期校验错误使 init 失败 `HPULOGC_ERR_CONFIG` |
+| `configure` | 核心；解析期逐键 | 灌入私有配置；**通用键（enabled/async/queue size/filter keys）已被核心先行消费**；未识别键返回非 0 → strict 成败 / lenient 告警忽略；解析期校验错误使 init 失败 `HPULOGC_ERR_CONFIG` |
 | `init` | 核心；**全部 configure 之后**、首次 emit 前，一次 | 默认填充与资源预检。**警告**：`init` 内只能写 `if (p->field == 0) p->field = default;` 形式的默认值填充，不得无条件赋值（会清掉 configure 灌入的值）；失败 → 该实例启动失败，init 整体失败 `HPULOGC_ERR_CONFIG` |
 | `start` | 核心；init 后 | 打开真实资源（文件/连接）；可为 NULL（init 已含打开）；失败 → `HPULOGC_ERR_IO`（fail-fast，沿用 rollingfile 打开语义） |
 | `emit` / `emit_batch` | 投递路径（§4.10.4/§4.10.6） | 写出事件；`emit` 不得返回失败，失败通过 per-sink 统计暴露（§4.10.3） |
@@ -221,7 +223,7 @@ typedef struct {
     unsigned long long written;        /*!< 该 sink 已成功投递（含入缓冲）的记录数 */
     unsigned long long dropped;        /*!< 投递到该 sink 前被丢弃的记录数（队列满 / 异步背压） */
     unsigned long long failed;         /*!< 写失败（含重试后仍失败）的记录数 */
-    unsigned long long fields_dropped; /*!< 被丢弃/截断的结构化字段数（§4.11.2 三成因） */
+    unsigned long long fields_dropped; /*!< 因 per-sink 过滤（§2.3 filter keys）被滤除的结构化字段数 */
     unsigned long long bytes_written;  /*!< 累计写出字节数（按事件行字节数累计） */
 } hpulogc_sink_stats_t;
 ```
@@ -232,11 +234,11 @@ typedef struct {
   的 lost 计数平移为 failed）；核心在 sink 关闭/替换时把未决 failed 并入
   全局 `retired_lost`（决策 16 迁移通道），保证全局统计恒等式闭合：
   `accepted = written + dropped + overwritten + throttled + 在途`。
-- `fields_dropped`：字段丢弃发生在**生产端**（§4.11.2，与 sink 无关——同一条
-  事件的字段裁剪对所有路由目标一致），因此该计数进入**全局统计**
-  （`hpulogc_stats_t` 追加 `fields_dropped` 字段，append-only ABI）；
-  per-sink 统计中的 `fields_dropped` 字段保留、恒 0（为未来 per-sink
-  字段过滤预留）。公共 API `hpulogc_get_sink_stats(name, &stats)` 读取
+- `fields_dropped`：记录**因该实例 `filter keys` 白名单（§2.3）被滤除**
+  的结构化字段数（每实例独立，逐字段 +1）。与全局 `fields_dropped`
+  （§4.11.2 生产端三成因，append-only ABI）**正交、不重复计数**；
+  未配置 `filter keys` 的实例恒 0。公共 API
+  `hpulogc_get_sink_stats(name, &stats)` 读取
   实例统计；`name` 未定义或未初始化 → `HPULOGC_ERR_INVALID_ARG` /
   `HPULOGC_ERR_STATE`。
 
@@ -269,7 +271,7 @@ typedef struct {
   依赖定位一致，附录 A.1-10 的 record 回调形态由本契约覆盖）。
 - **代码内配置**：`hpulogc_config_t.sinks[]`（`hpulogc_sink_decl_t`，§5）
   与 INI `[outputs]` 行内定义同构；键值对逐项经 `configure` 灌入，通用键
-  （enabled/async/queue size）由核心先行消费。`sinks` 与 `outputs`（垫片）
+  （enabled/async/queue size/filter keys）由核心先行消费。`sinks` 与 `outputs`（垫片）
   可混用，实例名合计受 `HPULOGC_MAX_SINKS` 约束；与 `[outputs]`（INI）或
   彼此重名 → init 失败 `HPULOGC_ERR_CONFIG`。
 - **实现约束**（重申 §4.10.4）：回调内禁止调用除 `hpulogc_sink_*` 外的库
@@ -298,7 +300,7 @@ typedef struct {
   → worker flush → join 全部 worker（有界，超时按现行为继续销毁）→
   sink destroy。顺序上 async worker 先于消费者线程汇合点之前停止接收，
   保证已入队事件被处理。
-- **热重载**：实例的 type/enabled/async/queue size 或任何私有键变化 →
+- **热重载**：实例的 type/enabled/async/queue size/filter keys 或任何私有键变化 →
   该实例**销毁重建**（worker 停止→排空→flush→destroy→新建）；rollingfile
   满足「path + 全参数相等」且 async 属性不变 → 复用现 fd（现行
   reuse_old_idx 语义平移）；console/syslog/null 一律重建（廉价且无状态）。
@@ -456,7 +458,8 @@ HPULOGC_API void hpulogc_vlog_ex(hpulogc_level_t level, const char* category,
 <name> = null,           <通用键...>
 <name> = <自定义类型>,   <该类型 configure 认识的键>, <通用键...>
 
-<通用键...> := enabled=true|false, async=on|off, queue size=<size>
+<通用键...> := enabled=true|false, async=on|off, queue size=<size>,
+              filter keys=<逗号分隔字段名白名单>
 ```
 
 代码内声明（新增，追加式 ABI）：
@@ -475,7 +478,7 @@ typedef struct {
     size_t                     sink_count;
 ```
 
-通用键（enabled/async/queue size）在两种声明形态中均可书写；扁平结构
+通用键（enabled/async/queue size/filter keys）在两种声明形态中均可书写；扁平结构
 `hpulogc_output_t` 的垫片映射见 §6。
 
 ---
