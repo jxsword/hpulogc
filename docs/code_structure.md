@@ -37,6 +37,11 @@ hpulogc/
 │   │   ├── hpu_tid.h             系统线程 id 契约
 │   │   ├── hpu_tls.h             线程局部存储（带析构）契约
 │   │   ├── hpu_signal.h          SIGHUP 注册契约（热加载触发）
+│   │   ├── hpu_net.h             网络/socket 原语契约（resolve、stream/
+│   │   │                         dgram open、send/sendto/close + UDS
+│   │   │                         connect 型 open；tcp/udp/unix sink 用，
+│   │   │                         §4.10.8/§4.10.9；发送路径保证不触发
+│   │   │                         SIGPIPE）
 │   │   ├── posix/
 │   │   │   ├── posix_sync.c      pthread mutex/cond（MONOTONIC condattr）
 │   │   │   ├── posix_thread.c    pthread 封装 + pthread_atfork
@@ -46,6 +51,10 @@ hpulogc/
 │   │   │   ├── posix_tls.c       pthread_key 封装
 │   │   │   ├── posix_tid.c       gettid（每线程缓存）
 │   │   │   ├── posix_signal.c    SIGHUP handler（仅置 sig_atomic_t 标志）
+│   │   │   ├── posix_net.c       socket 原语：resolve/stream/dgram open、
+│   │   │   │                     send(MSG_NOSIGNAL/SO_NOSIGPIPE)、
+│   │   │   │                     sendto、close + UDS connect 型 open
+│   │   │   │                     （unix stream/dgram，§4.10.9）
 │   │   │   ├── posix_watcher_poll.c  轮询回退后端（mtime+size 基线）
 │   │   │   └── posix_watcher.c   非 Linux POSIX 的公共入口（→轮询）
 │   │   ├── linux/
@@ -66,6 +75,10 @@ hpulogc/
 │   │       │                     FlushFileBuffers/MoveFileExW/
 │   │       │                     FindFirstFileW；权限忽略+一次性告警；
 │   │       │                     VT 启用与 CRT 二进制模式
+│   │       ├── win32_net.c       socket 原语 Winsock 后端（WSAStartup
+│   │       │                     惰性初始化；v1 网络型 sink 不在
+│   │       │                     Windows 编入，仅保契约平台完整可编译；
+│   │       │                     UDS open 为恒失败桩）
 │   │       ├── win32_path.c      双分隔符 dirname/basename/stem/
 │   │       │                     normalize（ASCII 大小写折叠）
 │   │       ├── win32_watcher.c   恒轮询后端（GetFileAttributesExW
@@ -96,6 +109,22 @@ hpulogc/
 │   │   ├── output_console.c      控制台后端（stdio、终端 ANSI 颜色）
 │   │   ├── output_file.c         文件后端（批量写、失败重开一次、fsync
 │   │                             策略、轮转检查钩子、lost 计数）
+│   │   ├── sink_null.c           null sink（丢弃一切；测试/基线/路由占位）
+│   │   ├── sink_queue.c/.h       per-sink 异步投递：第二级有界字节环
+│   │                             队列 + 专属 worker（恒 discard，D-S5；
+│   │                             批量解包→emit_batch、filter keys 应用）
+│   │   ├── sink_syslog.c         syslog sink（POSIX openlog/syslog 直通，
+│   │                             进程内单实例）
+│   │   ├── sink_tcp.c            TCP sink（行帧 + 合并缓冲；指数退避
+│   │                             重连，事件驱动，§4.10.8）
+│   │   ├── sink_udp.c            UDP sink（每记录恰一个数据报；MTU
+│   │                             截断、EAGAIN 丢弃计 failed，§4.10.8）
+│   │   ├── sink_unix.c           Unix domain socket sink（connect 型
+│   │                             客户端；dgram 每记录一数据报 /
+│   │                             stream 行帧；对端重启退避重连，§4.10.9）
+│   │   ├── sink_fifo.c           FIFO sink（写端恒 O_NONBLOCK；ENXIO
+│   │                             等待态退避重试不 fail-fast、EPIPE
+│   │                             重开、SIGPIPE 平台分流抑制，§4.10.9）
 │   │   └── rotate.c              归档命名模板展开、时间桶边界
 │   │                             （UTC 民历算法/本地 mktime）、冲突递增、
 │   │                             max files 清理、.latest 符号链接
@@ -138,28 +167,58 @@ hpulogc/
 │   │   ├── test_ini.c            词法逐条 + §10.4 行为表 + 全节解析
 │   │   ├── test_format.c         占位符/时间扩展/转义/截断
 │   │   ├── test_rotate.c         边界计算/命名/冲突/清理/软链
-│   │   └── test_lifecycle.c      生命周期语义、stats、errno 保持、
+│   │   ├── test_lifecycle.c      生命周期语义、stats、errno 保持、
 │   │                             代码配置错误路径、build info
+│   │   ├── test_api.c            公共 API 面（级别/类目/flush 等）
+│   │   ├── test_watcher.c        watcher 后端行为（变更事件、降级）
+│   │   ├── test_conf_validate.c  hpulogc_conf_validate 语义（§7.3）
+│   │   ├── test_ext_rotate.c     外部轮转检测（inode 节流比对，§4.6）
+│   │   ├── test_fields.c         结构化字段生产端/预算（§4.11）
+│   │   ├── test_sink_registry.c  sink 类型注册/裁剪/冻结语义
+│   │   └── test_sink_filter.c    per-sink filter keys（同步/异步/
+│   │                             strict 报错；§4.7.3，D-R14）
 │   ├── integration/
 │   │   ├── test_pipeline.c       §10.3.1 路由表逐行、兜底语义、JSON
 │   │   │                         合法性（python 校验）、截断端到端、
 │   │   │                         溢出会计、热加载（含回滚）
 │   │   ├── test_fork.c           reinit/disable/inherit
 │   │   ├── test_signal_safe.c    handler 内调用、开关门控、errno
-│   │   └── test_diskfail.c       I/O 注入：写失败重开、lost 会计、
+│   │   ├── test_mpmc.c           MPMC 并发模型行为（多消费者认领）
+│   │   ├── test_sinks.c          内置 sink 配置/记账/未知类型 fail-fast
+│   │   ├── test_sink_async.c     per-sink 异步投递端到端（隔离、
+│   │                             队列满丢弃、热重载）
+│   │   ├── test_net_sinks.c      tcp/udp loopback：收包断言、MTU 截断、
+│   │                             start fail-fast、重连退避、队列满
+│   │                             丢弃（§4.10.8）
+│   │   ├── test_ipc_sinks.c      unix/fifo：dgram/stream loopback、
+│   │                             ENOENT/sun_path fail-fast、对端重启
+│   │                             重连、ENXIO 延迟重试、EPIPE 重开、
+│   │                             EAGAIN 丢弃（§4.10.9）
+│   │   ├── test_diskfail.c       I/O 注入：写失败重开、lost 会计、
 │   │                             init 打开失败 fail-fast
 │   ├── fuzz/
 │   │   ├── fuzz_ini.c            LLVMFuzzerTestOneInput harness
 │   │   └── fuzz_main.c           确定性变异驱动（CTest 用）
 │   └── bench/
 │       ├── bench_log.c           延迟（逐条/摊销）+ 吞吐
-│       └── bench_memory.c        min 基线内存（statm + mallinfo2）
+│       ├── bench_sink.c          sink 分发开销基准（夜间门禁数据源）
+│       ├── bench_memory.c        min 基线内存（statm + mallinfo2）
+│       └── baseline_linux.json   bench 门禁基线（metrics 转录，E-7）
+├── tools/
+│   ├── chk_conf/                 hpulogc_chk_conf CLI（配置校验，§7.3）
+│   └── soak/soak_driver.c        24h 压测驱动（D-R6；采样/热重载/
+│                                 恒等式判据，soak_24h.sh 编排）
 ├── scripts/
 │   ├── run_matrix.sh             16 组合矩阵 + 4 预设一键验证（POSIX）
 │   ├── run_matrix.ps1            Phase 2：{99,11}×{锁,无锁}×{SPSC,MPSC,MPMC}
 │   │                             8 组合 + 4 预设（MSVC，零告警门禁）
 │   ├── msvc_build.bat            Phase 2：MSVC 环境包装（vcvars64）
-│   └── msvc_env.sh               Phase 2：Git Bash 环境变量参考
+│   ├── msvc_ci.bat               CI 侧 MSVC 环境（vswhere 自动发现）
+│   ├── msvc_env.sh               Phase 2：Git Bash 环境变量参考
+│   ├── soak_24h.sh               24h 压测编排（双变体、采样日志、
+│   │                             console 捕获小时截断、TSan setarch）
+│   ├── bench_gate.py             夜间 bench 指标门禁（vs baseline）
+│   └── vcpkg_smoke               vcpkg overlay port 冒烟（D-R9）
 ├── cmake/
 │   └── hpulogcConfig.cmake.in    find_package 包配置模板
 ├── CMakeLists.txt                全部选项/后端探测/sanitizer/预设/安装
@@ -184,17 +243,20 @@ hpulogc/
 | hpu_tid.h | 数值线程 id | GetCurrentThreadId | pthread_threadid_np |
 | hpu_tls.h | 带析构的 TLS 槽 | TlsAlloc 族 | 复用 posix 层 |
 | hpu_signal.h | SIGHUP 安装 + 原子取清 | 无（恒 -1） | 复用 posix 层 |
+| hpu_net.h | resolve/stream/dgram open、send/sendto/close、UDS connect 型 open（§4.10.8/§4.10.9） | win32_net.c 可编译桩（v1 网络/IPC sink 不在 Windows 编入） | 复用 posix 层 |
 
 动态库导出属性在公共头 `HPULOGC_API`（GCC/Clang visibility + Windows
 dllexport/dllimport），不属平台层。
 
 ## 3. Phase 2/3 实施状态（Phase 2 已交付）
 
-- `src/platform/win32/`：✅ 全部契约实现完成（9 个 .c 文件 + 快照
+- `src/platform/win32/`：✅ 全部契约实现完成（10 个 .c 文件 + 快照
   头），CMake WIN32 分支接入。契约冻结清单核对：本目录仅实现契约
   声明的函数，未新增/修改任何契约签名（hpu_sync.h 的 WIN32 结构体
   分支为 Phase 1 预定的 Phase 2 填充点）。实现要点与 Windows 特有
-  行为决策见 implementation_notes.md 的 Phase 2 章节。
+  行为决策见 implementation_notes.md 的 Phase 2 章节。（v0.6.2 起
+  win32_net.c 为 hpu_net 契约的可编译后端；tcp/udp/unix/fifo sink
+  依 §4.7.4 不在 Windows 编入，运行支持为后续工单。）
 - `src/atomic/atomic_msvc.h`：✅ 启用并验证——MSVC 与 MinGW-w64
   均走 `HPULOGC_ATOMIC_BACKEND_MSVC`（Windows 后端唯一，§4.3）；
   Phase 2 修正 MinGW 兼容（_ReadBarrier）与 32 位目标 64 原子读写。
