@@ -4,6 +4,8 @@
 build/
 out/
 cmake-build-*/
+build-*/
+build_*/
 
 # =====================
 # CMake 缓存与临时文件
