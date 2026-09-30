@@ -221,6 +221,7 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 | `udp` | — | UDP 数据报输出（每记录恰一个数据报；MTU 截断，§4.10.8） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | 同 `tcp` |
 | `unix` | — | Unix domain socket 客户端输出（connect 型，库不创建端点；dgram 每记录一个数据报 / stream 同 TCP 行帧，§4.10.9） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX UDS | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（POSIX-only）** |
 | `fifo` | — | 命名管道（FIFO）写端输出（恒 `O_NONBLOCK`；无读取者 ENXIO 延迟重试不 fail-fast，§4.10.9） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX FIFO | 同 `unix` |
+| `http` | — | HTTP/1.1 Webhook POST（手写客户端，仅明文 `http://`；NDJSON/lines 批量，keep-alive，at-most-once，§4.10.10） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（v1 POSIX-only）** |
 
 - `file` 是 `rollingfile` 的**配置别名**：仅把 `rotate` 的**默认值**设为
   `none`，其余键与 `rollingfile` 完全一致；显式书写 `rotate=size|time|both`
@@ -232,8 +233,9 @@ HPULOGC_LEVEL_TRACE(0) < HPULOGC_LEVEL_DEBUG(1) < HPULOGC_LEVEL_INFO(2) < HPULOG
 - `[outputs]` 中定义的所有 rollingfile 类 sink 在 init 时即打开（沿用
   fail-fast 语义，§4.10.2）；打开失败使 init 失败（`HPULOGC_ERR_IO`）。
 - **Socket 输出**：v0.1 的 socket 骨架预留已由内置网络型 sink `tcp`/`udp`
-  兑现（v0.6.2，§4.10.8）；未注册的类型一律 fail-fast（§10.4）。需要其他
-  网络协议（HTTP/Webhook 等）时仍以**自定义 sink** 形态实现（§4.10.5），
+  兑现（v0.6.2，§4.10.8）；HTTP/Webhook 已由内置 sink `http` 兑现
+  （v0.6.8，§4.10.10）；未注册的类型一律 fail-fast（§10.4）。需要其他
+  网络协议时仍以**自定义 sink** 形态实现（§4.10.5），
   在 `[outputs]` 中 `type = <自定义类型>`。
 
 #### 4.7.2 内置 sink 的配置键
@@ -265,6 +267,12 @@ sink 的**私有键**（逐项交给 `configure`）：
 | unix | `socktype` | `dgram` / `stream` | `dgram` | stream 同 TCP 行帧（`\n`） |
 | unix/fifo | `reconnect backoff` | 重连/重开初始退避（秒） | 1 | 1–60 |
 | unix/fifo | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
+| http | `url` | 目标 URL（仅 `http://` scheme；缺省端口 80、缺省路径 `/`） | 必填 | v1 POSIX-only（Windows 不可注册）；`https://` 拒绝配置（§4.10.10，D-R21） |
+| http | `header` | 附加请求头，`k:v` 形式，**可重复**（认证经此） | 无 | ≤ 8 个；键/值含 CR/LF 拒绝（头注入防护） |
+| http | `batch mode` | 批量 body 形态 | `ndjson` | `ndjson`（每批一个 JSON 数组，一行一事件）\| `lines`（逐行 `text/plain`） |
+| http | `timeout ms` | 单次请求上限（毫秒，**不含 connect 阶段**） | 1000 | 100–60000 |
+| http | `reconnect backoff` | 连接失效重连初始退避（秒） | 1 | 1–60 |
+| http | `reconnect backoff max` | 退避封顶（秒） | 30 | 须 ≥ `reconnect backoff` |
 
 - 上述键即 v0.2 `hpulogc_output_t` 的字段集合；`rotate` / `time unit` 的
   取值集合沿用 `hpulogc_rotate_t` / `hpulogc_time_unit_t` 两个枚举（二者
@@ -295,8 +303,8 @@ sink 的**私有键**（逐项交给 `configure`）：
 #### 4.7.4 类型注册与裁剪（规范性）
 
 - 构建选项 **`HPULOGC_SINKS`**（CMake string，逗号分隔白名单，默认
-  `console,rollingfile,syslog,tcp,udp,unix,fifo,null`；Windows 自动移除
-  `syslog`/`tcp`/`udp`/`unix`/`fifo`——POSIX-only）决定哪些
+  `console,rollingfile,syslog,tcp,udp,unix,fifo,http,null`；Windows 自动移除
+  `syslog`/`tcp`/`udp`/`unix`/`fifo`/`http`——POSIX-only）决定哪些
   内置类型被编译进库；未列入的类型：注册表不含之，配置引用时报
   「未注册类型」fail-fast。
 - `min` 预设强制 `HPULOGC_SINKS=console,rollingfile`（§5）；其余预设不
@@ -545,9 +553,9 @@ typedef struct {
 
 #### 4.10.8 网络型 sink（规范性）
 
-> 本节约束随库分发的网络型内置 sink（v0.6.2 起：`tcp` / `udp`），并为后续
-> 网络族（HTTP/Webhook 等）与本机 IPC 型 sink（§4.10.9，v0.6.7 起：
-> `unix` / `fifo`）提供公共语义基线。
+> 本节约束随库分发的网络型内置 sink（v0.6.2 起：`tcp` / `udp`；HTTP/
+> Webhook 见 §4.10.10，v0.6.8 起：`http`），并与本机 IPC 型 sink
+> （§4.10.9，v0.6.7 起：`unix` / `fifo`）共享公共语义基线。
 > 平台范围：**v1 仅 POSIX**（`HPULOGC_SINKS` 中的 `tcp`/`udp` 在 Windows
 > 构建上自动排除，同 `syslog`）；Windows 运行支持为后续工单。
 
@@ -673,6 +681,67 @@ typedef struct {
 - 发送合并缓冲由 priv 预分配（create 时清零），稳态零 malloc（§4.10.4）。
 - 记账恒等式闭合同 §4.10.8：截断/`EAGAIN`/发送失败/退避窗口内/
   等待态事件计 `failed`；队列满计 `dropped`（核心累加）。
+
+#### 4.10.10 HTTP / Webhook sink：http（规范性，v0.6.8）
+
+> 本节约束随库分发的 HTTP/Webhook 内置 sink（`http`）。公共语义基线——
+> 能力位、at-most-once 投递边界、记账恒等式（§4.10.3）、热重载销毁重建、
+> 不实现 `periodic`——**沿用 §4.10.8，不在此重复**。平台范围：**v1 仅
+> POSIX**（`HPULOGC_SINKS` 中的 `http` 在 Windows 构建上自动排除，同
+> `syslog`/`tcp`/`udp`）。
+> 依赖与 TLS 边界（D-R21）：实现为**手写 HTTP/1.1 客户端**（仅标准 C 库
+> + OS socket API，§6 零依赖约束），**仅支持明文 `http://` scheme**；
+> TLS 不是零依赖下可手写达成的密码学目标，`https://` 配置即
+> `HPULOGC_ERR_CONFIG`。需要 TLS 时由使用方在服务侧前置 TLS 终端反代
+> （stunnel/nginx 等）：库以内网明文 POST 到反代，反代出口 HTTPS——
+> 业界成熟部署形态。可选 TLS 编译模块（mbedTLS/OpenSSL）列为远期项
+> （破例 §6 须另行走决策矩阵）。
+
+**类型与配置键**（`configure` 私有键；完整表亦见 §4.7.2）：
+
+| 键 | 含义 | 默认值 | 约束 |
+|----|------|--------|------|
+| `url` | 目标 URL | 必填 | 仅 `http://` scheme；缺省端口 80、缺省路径 `/`；host ≤ 255 字节，超出/非法 → `HPULOGC_ERR_CONFIG` |
+| `header` | 附加请求头，`k:v` 形式，可重复（认证如 `Authorization: ...` 经此） | 无 | ≤ 8 个；键 ≤ 128 字节、值 ≤ 256 字节；键或值含 CR/LF → `HPULOGC_ERR_CONFIG`（头注入防护） |
+| `batch mode` | 批量 body 形态 | `ndjson` | `ndjson` \| `lines`（语义见下） |
+| `timeout ms` | 单次请求上限（毫秒） | 1000 | 100–60000；**不含 connect 阶段**（阻塞 connect 走 OS 默认超时，边界明示） |
+| `reconnect backoff` / `reconnect backoff max` | 连接失效重连退避（秒） | 1 / 30 | 同 TCP（§4.10.8） |
+
+**http 语义**：
+
+- 投递单元：worker 攒批（async 二级队列 batch 粒度，§4.10.6）一次
+  POST；`emit_batch` 内增量组装 body——priv 预分配缓冲将满即先发出
+  一次 POST 再续装，**一批可拆多个 POST**；单事件渲染行超出缓冲上限 →
+  该事件计 `failed`（不投递、不截断——截断会产生非法 JSON 元素）。
+- 请求形态：`POST <path> HTTP/1.1` + `Host` + `Content-Type`
+  （`ndjson` → `application/x-ndjson`；`lines` → `text/plain`）+
+  `Content-Length` + 配置 `header`（按配置顺序）+ body；恒
+  `Content-Length`（不使用 chunked 请求）。`ndjson` body 为一个 JSON
+  数组，每事件渲染行转义为一个字符串元素（`"`/`\`/控制字符转义、
+  UTF-8 字节透传）；转义实现为 sink 内等效函数（渲染层 format.c 的
+  转义为其私有静态函数未导出；两处语义保持一致）。
+- 连接管理：**keep-alive 单连接复用**——2xx 响应且对端未声明关闭时，
+  下一批复用当前连接；响应含 `Connection: close`、连接写/读失败、或
+  响应形态无法判定边界（chunked / 无 Content-Length）→ 本次后不复用，
+  下一批按退避语义重连。`start` 首连失败 → `HPULOGC_ERR_IO` fail-fast；
+  运行期连接失效 → **指数退避重连**（初始 `reconnect backoff`、失败
+  ×2、封顶 `reconnect backoff max`、成功复位；事件驱动，重连沿用 start
+  时解析的地址，§4.10.8 TCP 语义完全一致）。
+- 响应处理：在 `timeout ms` 内读取状态行与响应头，**不消费完整 body
+  渲染**——状态码 2xx 计 `written`（整批），按 `Content-Length` 有界
+  排空 body（上限 64KB，防对端失控）后复用连接；chunked/无
+  Content-Length 响应 → 本次后不复用连接。**不跟随重定向**（3xx 计
+  `failed`）。
+- 失败语义：3xx/4xx/5xx、超时、连接失败/失效 → 该批事件计 `failed`
+  且**不重试**（**at-most-once**——请求级重试可能造成重复投递，与
+  投递边界冲突；重试语义留契约 v2 的三态返回扩展）。**不保证送达**，
+  明示。
+- `async=on` **必需**（D-R22）：HTTP 往返延迟为秒级量级（远高于
+  TCP send），`async=off` 会把每条日志的同步 POST 阻塞强加给调用方
+  线程。`http` 类型实例 `async=off`（**含缺省**）→ init 失败
+  `HPULOGC_ERR_CONFIG`（fail-fast）。此约束严格于 §4.10.8 的
+  "`async=off` 使用方自担"——量级差异（秒级 vs 微秒-毫秒级）明示为
+  禁止的理由。
 
 ---
 
@@ -1366,6 +1435,12 @@ signal reload = false
 #               unix 另有 socktype=dgram|stream（默认 dgram）、reconnect backoff / reconnect backoff max
 #               fifo 另有 reconnect backoff / reconnect backoff max；不做 popen——读取进程由
 #               使用方自行启动（附录 A.1 #10）
+# http:         url（仅 http://，必填；https 拒绝——零依赖约束，TLS 由服务侧前置反代终止，
+#               D-R21）、header=k:v（可重复，认证经此，≤8 个，键/值含 CR/LF 拒绝）、
+#               batch mode=ndjson|lines（默认 ndjson：每批一个 JSON 数组、一行一事件）、
+#               timeout ms（单次请求上限毫秒，不含 connect，默认 1000）、reconnect backoff /
+#               reconnect backoff max（HTTP 型 sink §4.10.10；v1 POSIX 专属，Windows 不可注册；
+#               **async=on 必需**，async=off 含缺省即配置失败；at-most-once，5xx/超时不重试）
 # null:         无私有键（丢弃一切；审计/指标下线的路由落点）
 # <自定义类型>:  hpulogc_sink_register 注册的类型（§4.10.5）；未注册类型定义即启动失败
 # ============================================================================
@@ -1388,6 +1463,10 @@ net_udp      = udp, host=127.0.0.1, port=514, async=on, queue size=1mb, mtu=1472
 # FIFO 须使用方先 mkfifo 并自行启动读取进程，库不做 popen，附录 A.1 #10）：
 # ipc_unix     = unix, path=/var/run/myapp/log.sock, async=on, queue size=1mb, socktype=dgram
 # ipc_fifo     = fifo, path=/var/run/myapp/log.pipe, async=on, queue size=1mb
+
+# HTTP/Webhook 输出示例（v1 POSIX 专属；手写 HTTP/1.1 明文 POST；async=on 必需；
+# at-most-once——5xx/超时计 failed 不重试；TLS 需求由服务侧前置反代终止，D-R21）：
+web_hook     = http, url=http://127.0.0.1:18080/logs, async=on, queue size=1mb, batch mode=ndjson, timeout ms=1000, header="X-Auth-Token: abc123"
 
 # per-sink 字段过滤示例：该 sink 只投递列出的字段（其余字段计入该实例 fields_dropped，§4.10.3）
 metrics_udp  = udp, host=10.0.0.9, port=8125, filter keys="trace_id,user_id"
@@ -1768,7 +1847,7 @@ P0/P1 功能项在 Phase 1（Linux）完成；Windows/macOS 专属适配分别�
 | 优先级 | 项目 |
 |--------|------|
 | **P0（必须）** | 纯 C 实现、跨平台、线程安全、6 级日志、环形缓冲（有锁）、文件+控制台输出、INI 配置、单元测试、CMake 构建、API 签名、导出符号、错误处理、编译警告、Sanitizer、安装规则、示例、配置解析器行为约束 |
-| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）**、**网络型 sink（TCP/UDP）（§4.10.8）**、**本机 IPC 型 sink（UDS/FIFO）（§4.10.9）** |
+| **P1（重要）** | 无锁队列、MPSC 模式、批量提交、日志轮转、溢出策略、集成测试、性能测试、性能量化目标、信号处理/fork 安全、配置热加载、多 Category、时间戳/时区、模糊测试、ABI 稳定性、C99/C11 双标准原子实现、**编译期裁剪体系（`HPULOGC_ENABLE_*` 等）、四版本构建预设**、MPMC 并发模式、**多 sink 体系（§4.7/§4.10）、结构化字段（§4.11）、per-sink 异步投递**、**级别启用查询 `hpulogc_level_enabled` + `HPULOGC_xxx_ENABLED` 宏族（§4.1/§7.3）**、**网络型 sink（TCP/UDP）（§4.10.8）**、**本机 IPC 型 sink（UDS/FIFO）（§4.10.9）**、**HTTP/Webhook sink（§4.10.10）** |
 | **P2（增强）** | 彩色输出（Linux 部分随 Phase 1，Windows VT 适配随 Phase 2）、格式定制、包管理器、静态分析、文档生成、移植指南、`hpulogc_strerror` 错误描述 API、**配置校验 `hpulogc_conf_validate` + `hpulogc_chk_conf` CLI（§7.3/§11）** |
 
 ---
@@ -2043,6 +2122,32 @@ per-sink 字段过滤（兑现 §4.10.3 预留，任务来源仓库 todo.md 一 
 4. §10.3 配置模板追加 unix/fifo 键位图例与注释形态示例（INI 片段经
    `hpulogc_chk_conf` 实测）。
 5. §17 P1 行追加「本机 IPC 型 sink（UDS/FIFO）（§4.10.9）」。
+
+### v0.6.8（2026-09-30）
+
+HTTP/Webhook sink（任务来源仓库 todo.md 二.11 网络型 sink 第三期，TLS
+路线与 async=off 语义见决策记录 D-R21/D-R22）。规范先行增补，实现随后：
+
+1. 新增 §4.10.10「HTTP / Webhook sink：http」（规范性）：手写 HTTP/1.1
+   POST（零依赖，§6）；仅明文 `http://`（D-R21——`https://` 拒绝配置，
+   TLS 由服务侧前置反代终止，可选 TLS 编译模块列远期）；配置键 `url`/
+   `header`（可重复，CR/LF 注入防护）/`batch mode=ndjson|lines`/
+   `timeout ms`（不含 connect）/reconnect backoff 族；批量 POST（缓冲
+   将满即拆分多 POST，超限行计 failed 不截断）；keep-alive 单连接复用 +
+   失效指数退避重连（同 TCP）；响应在 `timeout ms` 内读状态行与头、按
+   `Content-Length` 有界排空（不跟随重定向）；2xx 计 written，3xx/4xx/
+   5xx/超时/连接失败计 failed **不重试**（at-most-once，重试语义留契约
+   v2）；**async=on 必需**（D-R22——async=off 含缺省即 ERR_CONFIG，
+   严格于 §4.10.8 "自担"语义的理由明示）；v0.6.8 POSIX-only。
+2. §4.7.1 内置清单追加 `http` 行；§4.7.2 追加私有键行；"需要其他网络
+   协议仍以自定义 sink 形态"句改写（HTTP/Webhook 已内置）。
+3. §4.7.4 `HPULOGC_SINKS` 默认串更新为
+   `console,rollingfile,syslog,tcp,udp,unix,fifo,http,null`（Windows
+   自动移除 syslog/tcp/udp/unix/fifo/http）；`min` 预设不含 http
+   （§5 不变）。
+4. §10.3 配置模板追加 http 键位图例与示例（INI 片段经 `hpulogc_chk_conf`
+   实测）。
+5. §17 P1 行追加「HTTP/Webhook sink（§4.10.10）」。
 
 ---
 

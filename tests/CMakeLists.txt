@@ -141,6 +141,9 @@ if(NOT WIN32 AND HPULOGC_ENABLE_INI)
     # by the test itself. Internally noop-gated per
     # HPULOGC_SINK_UNIX/HPULOGC_SINK_FIFO like above.
     hpu_add_test_binary(test_ipc_sinks SRCS integration/test_ipc_sinks.c)
+    # HTTP sink (rd_v0.6 §4.10.10): POSIX-only, in-process miniature
+    # HTTP server. Internally noop-gated per HPULOGC_SINK_HTTP.
+    hpu_add_test_binary(test_http_sink SRCS integration/test_http_sink.c)
 endif()
 hpu_add_test_binary(test_sink_async SRCS integration/test_sink_async.c)
 hpu_add_test_binary(test_signal_safe SRCS integration/test_signal_safe.c)

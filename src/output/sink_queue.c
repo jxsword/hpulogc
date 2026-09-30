@@ -185,7 +185,11 @@ static size_t sq_decode(const sq_worker_ctx_t* ctx, size_t off,
                         hpulogc_event_t* ev, hpulogc_field_t* fld_out)
 {
     hpu_sink_queue_t* q = ctx->q;
-    const uint8_t* base = q->buf;
+    /* Decode from the worker's linearized sweep copy, NOT from q->buf:
+     * @p off is relative to the sweep start (q->buf offsets go stale as
+     * soon as a sweep begins at head%cap != 0 -- defect P-8). The sweep
+     * buffer is q->cap sized, so the q->cap bounds below stay valid. */
+    const uint8_t* base = ctx->sweep;
     const uint8_t* rd;
     uint32_t rec_len;
     uint16_t line_len, body_len, cat_len, file_len, func_len;

@@ -162,6 +162,83 @@ TEST(sink_async_queue_full_drops)
     hpulogc_shutdown();
 }
 
+TEST(sink_async_content_no_dup)
+{
+    /* Defect P-8 regression: the worker must decode every sweep from
+     * its linearized sweep copy. Decoding from the ring buffer instead
+     * re-delivered the oldest records and dropped the newly swept ones
+     * on every sweep that started at head%cap != 0 (i.e. every sweep
+     * after the first). Distinct messages + partial sweeps make any
+     * duplication/loss visible in the file content. */
+    hpulogc_config_t cfg;
+    hpulogc_sink_decl_t sinks[1];
+    static char path[256];
+    static const char* keys[] = { "path", "async", "queue size" };
+    static const char* vals[3];
+    static const char* names[] = { "p8f" };
+    char tmpdir[128];
+    int i;
+
+    hpu_test_tmpdir(tmpdir, sizeof(tmpdir));
+    snprintf(path, sizeof(path), "%s/p8_%d.log", tmpdir, hpu_test_getpid());
+    vals[0] = path;
+    vals[1] = "on";
+    vals[2] = "64kb";
+
+    hpulogc_config_default(&cfg);
+    sinks[0].name = "p8f";
+    sinks[0].type = "rollingfile";
+    sinks[0].keys = keys;
+    sinks[0].vals = vals;
+    sinks[0].count = 3;
+    cfg.sinks = sinks;
+    cfg.sink_count = 1;
+    cfg.default_outputs = names;
+    cfg.default_output_count = 1;
+
+    CHECK_EQ(hpulogc_init(&cfg), HPULOGC_OK);
+    /* three separated bursts: each burst lands in its own sweep, so a
+     * sweep starting at head%cap != 0 is guaranteed */
+    for (i = 0; i < 2; i++) {
+        HPULOGC_INFO("a", "p8 marker %d", i);
+    }
+    hpu_test_sleep_ms(120);
+    for (i = 2; i < 4; i++) {
+        HPULOGC_INFO("a", "p8 marker %d", i);
+    }
+    hpu_test_sleep_ms(120);
+    for (i = 4; i < 6; i++) {
+        HPULOGC_INFO("a", "p8 marker %d", i);
+    }
+    CHECK_EQ(hpulogc_flush(), HPULOGC_OK);
+    hpulogc_shutdown();
+
+    /* every marker exactly once (line ~70 bytes, file < 1 KB) */
+    {
+        char buf[4096];
+        size_t got = 0;
+        FILE* fp = fopen(path, "r");
+
+        CHECK(fp != NULL);
+        got = fread(buf, 1, sizeof(buf) - 1, fp);
+        buf[got] = '\0';
+        fclose(fp);
+        for (i = 0; i < 6; i++) {
+            char needle[64];
+            const char* p = buf;
+            int count = 0;
+
+            snprintf(needle, sizeof(needle), "p8 marker %d", i);
+            while ((p = strstr(p, needle)) != NULL) {
+                count++;
+                p++;
+            }
+            CHECK_EQ(count, 1);
+        }
+    }
+    hpu_test_unlink(path);
+}
+
 TEST(sink_async_shutdown_drains)
 {
     hpulogc_config_t cfg;

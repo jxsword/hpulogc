@@ -204,4 +204,25 @@ void hpu_net_close(int fd)
     }
 }
 
+int hpu_net_set_timeout(int fd, int send_ms, int recv_ms)
+{
+    /* Compile-only stub (same rationale as the unix prims below): the
+     * http sink is POSIX-only in v1 (rd_v0.6 §4.10.10), so nothing in
+     * the v1 Windows build calls this. */
+    (void)fd;
+    (void)send_ms;
+    (void)recv_ms;
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+int hpu_net_recv(int fd, void* buf, size_t cap)
+{
+    (void)fd;
+    (void)buf;
+    (void)cap;
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
 #endif /* defined(_WIN32) */
