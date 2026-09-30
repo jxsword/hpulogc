@@ -657,3 +657,36 @@
 - 结论：A。
 - 理由：免费、低风险、补齐平台矩阵的最后一格；B 是假覆盖。
 - 影响：.github/workflows/ci.yml（linux-arm64-smoke leg）。
+
+## D-R20 FIFO 打开语义：ENXIO（无读取者）延迟退避重试，不 fail-fast（2026-09-30，网络 sink 第二期「UDS/FIFO」任务书 §三.B）
+
+- 背景：`fifo` sink（rd_v0.6 §4.10.9，v0.6.7）只开已存在 FIFO 的写端。
+  POSIX 语义下，`open(FIFO, O_WRONLY | O_NONBLOCK)` 在对端读取进程尚未
+  启动时报 `ENXIO`；而读取进程晚于（或独立于）日志使用方启动/重启是
+  rotatelogs/multilog 类场景的常态。TCP/UDS 的 `start` 均为 fail-fast
+  （首连失败 = `HPULOGC_ERR_IO`），FIFO 需要单独定夺打开语义。
+- 选项：
+  - A. ENXIO 延迟退避重试（不 fail-fast）——优点：读取进程晚启动是
+    正常时序而非配置错误，实例照常建立、emit 路径按退避周期重试打开，
+    与外部进程的生命周期解耦；与 EPIPE 重开共用同一退避机件，实现单一
+    路径 / 缺点：纯配置错误（路径指向无人会读的 FIFO）不再于 start 时
+    暴露，只能靠 failed 计数观察 / 代价：start 语义与 TCP/UDS 不一致，
+    需规范明示差异与理由
+  - B. start fail-fast（同 TCP：ENXIO 即 init 失败）——优点：全家族
+    start 语义一致，配置错误早暴露 / 缺点：把"读取进程还没起"这一时序
+    正常场景变成启动失败，rotatelogs 类场景要求严格的进程启动顺序
+    （先读后写），部署脆弱 / 代价：使用者需自行编排启动顺序或重试逻辑
+  - C. 懒连接（start 不打开文件，emit 时才试）——优点：start 永不因
+    ENXIO 失败，也无 B 的顺序耦合 / 缺点：丢失"路径存在性/是否 FIFO"
+    的启动期校验（ENOENT/非 FIFO 也推迟到运行期），`ENXIO` 与 `ENOENT`
+    两类错误在记账上不可区分，可观测性最差；且与 rollingfile/TCP 的
+    "init 即打开"基线偏离最大 / 代价：调试配置错误从启动期推迟到运行期
+- 结论：A（任务书 §三.B 定案）。
+- 理由：FIFO 的读取方是外部进程，晚启动属正常时序，不应 fail-fast；
+  但路径校验（存在且为 FIFO）保留在 start（ENOENT/非 FIFO 仍
+  fail-fast），折中 B 的"配置错误早暴露"与 A 的时序解耦——错误按
+  类型分流而非一刀切。C 因可观测性最差被放弃。
+- 影响：rd_v0.6 §4.10.9 fifo 语义条款（fail-fast 与延迟重试的分界）、
+  `src/output/sink_fifo.c` start/emit 实现、§10.3 配置模板注释；
+  实现层自由度（SIGPIPE 抑制、ENXIO/EPIPE 共用退避机件等）另见
+  implementation_notes「IPC 型 sink」节。

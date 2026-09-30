@@ -57,6 +57,10 @@
 | `rollingfile` | `file` | 文件写入，含轮转（size/time/both）、备份数、命名模板、`.latest` 软链、fsync | `SYNC \| ASYNC \| LINE_ATOMIC \| FSYNC` | 无 | 轮转受 `HPULOGC_ENABLE_ROTATE` 裁剪；sink 本体不可裁剪 |
 | `syslog` | — | POSIX `openlog`/`syslog` 直通 | `SYNC` | libc syslog | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册** |
 | `null` | — | 丢弃一切（测试/基线；也是「审计/指标下线」的路由落点，§7.3） | `SYNC \| ASYNC` | 无 | **默认注册**；`min` 预设排除（§5） |
+| `tcp` | — | TCP 行帧输出（每记录追加 `\n`）；断线指数退避重连（rd_v0.6 §4.10.8，v0.6.2 起内置） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（v1 POSIX-only）** |
+| `udp` | — | UDP 数据报输出（每记录恰一个数据报；MTU 截断，rd_v0.6 §4.10.8） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX socket | 同 `tcp` |
+| `unix` | — | Unix domain socket 客户端输出（connect 型，库不创建端点；dgram 每记录一个数据报 / stream 同 TCP 行帧，rd_v0.6 §4.10.9，v0.6.7 起内置） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX UDS | `HPULOGC_SINKS` 未含该类型即为排除；**Windows 上该类型不可注册（POSIX-only）** |
+| `fifo` | — | 命名管道（FIFO）写端输出（恒 `O_NONBLOCK`；无读取者 ENXIO 延迟重试不 fail-fast；不做 popen，rd_v0.6 §4.10.9） | `SYNC \| ASYNC \| LINE_ATOMIC` | POSIX FIFO | 同 `unix` |
 
 - `file` 是 `rollingfile` 的**配置别名**：仅把 `rotate` 的**默认值**设为
   `none`，其余键与 `rollingfile` 完全一致；显式书写 `rotate=size|time|both`

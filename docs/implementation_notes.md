@@ -655,3 +655,19 @@ nightly 不再有预期内失败。同工单顺带清理了误提交的 `[DBG]` 
 | E-5 | 门禁指标集合 | 仅纳 amortized 类指标（bench_log amortized + bench_sink 五场景 avg ns/op）；throughput logs/sec 与 P50/P99 不入门禁 | 吞吐受调度噪声影响最烈（2C runner 上可达 ±30%），分位数受时钟粒度伪影污染（perf_report_sinks §7.4）；amortized 单时钟对最稳。代价：吞吐回归要靠人工复核 artifact 发现 |
 | E-6 | 夜间作业独立 workflow | bench 门禁放独立 `.github/workflows/bench_nightly.yml`（每日 02:00 UTC），ci.yml 不加 cron | 同 workflow 内多个 schedule 行会在任一 schedule 事件时全部触发——加进 ci.yml 会把周一 TSan 变每日跑；独立文件让两个夜间作业天然错峰、互不影响 |
 | E-7 | 基线缺失时的门禁行为 | `baseline_linux.json` 首版 `metrics` 为空对象，gate 告警放行（exit 0）+ artifact 上传 | bootstrap 期不阻塞 CI；流程固化在 workflow 注释与 perf_report_sinks §8.2，防止基线长期空置无人补 |
+
+# 本机 IPC 型 sink unix/fifo（rd_v0.6 v0.6.7）实现自由度登记
+
+> 任务书授权"实现自由度自定后登记"。FIFO 打开语义（ENXIO 不 fail-fast）
+> 属用户定案项，见 decision_log D-R20；以下为实现层选择。
+
+| # | 自由度 | 决定 | 理由与代价 |
+|---|--------|------|-----------|
+| N-1 | 规范条款落点 | 新增 §4.10.9「本机 IPC 型 sink」而非扩写 §4.10.8 | §4.10.8 的配置键表（host/port）与 UDP/TCP 语义绑定；UDS/FIFO 走 `path` 键且 start 语义有差异（fifo ENXIO），独立小节引用 §4.10.8 公共基线更清晰。任务书授权"同一小节或相邻小节" |
+| N-2 | UDS 原语落点 | 扩展 `hpu_net` 契约（`hpu_net_unix_stream_open`/`hpu_net_unix_dgram_open`）而非 sink_unix.c 直写 syscall；win32_net.c 补可编译桩（返回 -1） | 平台分层原则：sink 层不触 OS 网络头（hpu_net.h 契约注释明示）；unix/fifo sink 本体 `#if !defined(_WIN32)` 编入（同 syslog），Win32 桩仅为 MSVC /W4 全量编译门禁服务 |
+| N-3 | UDS dgram 的 connect 型打开 | dgram socket 也 connect 到 `sun_path`，emit 复用 `hpu_net_send`（而非 UDP 的 unconnected + sendto） | 运行期对端重启时 send 报 `ECONNREFUSED`/`EPIPE`，断线检测与 TCP 完全同构（复用同一退避机件）；免存 sockaddr_un。代价：失去 sendto 每报换目标的自由——本 sink 目标恒定，无损失 |
+| N-4 | FIFO 的 SIGPIPE 抑制 | 写路径以 `pthread_sigmask(SIG_BLOCK, {SIGPIPE})` 临时阻塞 + 写后恢复；不改动进程级 signal disposition | write 无 MSG_NOSIGNAL/SO_NOSIGPIPE 等价物；全局忽略 SIGPIPE 侵入宿主进程的信号语义，不可接受。代价：每次合并写多两对 syscall（每 emit_batch 一次，摊销可忽略）；若宿主本就阻塞 SIGPIPE 则语义不变 |
+| N-5 | FIFO start 的错误分流 | `ENOENT`/非 FIFO（`hpu_fs_stat_kind` 先验）→ start 失败 `HPULOGC_ERR_IO`；`ENXIO` → 等待态 + emit 路径退避重试 | 错误按类型分流（D-R20 结论）：路径错配早暴露，读取方缺位不失败。代价：stat 与 open 之间有 TOCTOU 窗口——FIFO 文件被删换时以 open 的 errno 为准（ENOENT 亦按等待态重试处理，规范明示） |
+| N-6 | unix/fifo 退避机件复用 | `reconnect backoff`/`reconnect backoff max` 键名与 mark_disconnected/reconnect 状态机逐字复用 sink_tcp 模式（事件驱动，无 periodic） | 与 §4.10.8 语义基线一致（规范要求"同 TCP 退避语义"）；异步 worker 不调 periodic 的既有约束（§4.10.7）决定了事件驱动是唯一可用路径 |
+| N-7 | 测试文件落点 | 新文件 `tests/integration/test_ipc_sinks.c`（而非扩写 test_net_sinks.c） | UDS/FIFO 用例需要 mkdtemp 路径与 mkfifo/mksockep 监听生命周期，与 test_net_sinks 的端口监听辅助无共享代码；独立文件让 `HPULOGC_SINK_UNIX`/`HPULOGC_SINK_FIFO` noop 门控各自独立（裁剪组合仍全绿） |
+| N-8 | 行帧与合并缓冲 | unix stream 与 fifo 均按 TCP 模式合并行帧（64KB priv 预分配，整批一次写）；unix dgram 每记录恰一个数据报、不加 `\n` | dgram 数据报边界即记录边界（规范条款）；stream/fifo 为字节流必须行帧，合并写减少 syscall 与 SIGPIPE 抑制的触发次数。超长单行走 TCP 同款"先清缓冲直写"旁路 |
